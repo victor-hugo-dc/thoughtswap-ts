@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { socket } from './socket';
 import StudentView from './components/StudentView';
 import TeacherView from './components/TeacherView';
-import './App.css';
+import { LogOut, Users, Zap } from 'lucide-react';
 
 type UserRole = 'STUDENT' | 'TEACHER' | null;
 
@@ -34,7 +34,7 @@ function App() {
       if (name && role) {
         setAuthState({
           isLoggedIn: true,
-          name: name,
+          name: decodeURIComponent(name),
           role: role,
         });
       }
@@ -43,6 +43,12 @@ function App() {
       window.history.replaceState({}, document.title, "/");
     }
   }, []);
+
+  const handleLogout = () => {
+    // In a real app, you would hit a backend endpoint to clear the session/JWT
+    setAuthState({ isLoggedIn: false, name: null, role: null });
+    setJoinCode('');
+  };
 
   // --- Student Join Logic (for authenticated students) ---
   const handleStudentJoin = () => {
@@ -61,14 +67,19 @@ function App() {
   };
 
   if (!authState.isLoggedIn) {
-    // Show the login screen
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2rem', marginTop: '10vh' }}>
-        <h1>⚡ ThoughtSwap</h1>
-        <p>Please log in using your Canvas account to continue.</p>
+      <div className="flex flex-col items-center justify-center min-h-screen p-4">
+        <h1 className="text-5xl font-extrabold text-indigo-700 mb-8 flex items-center">
+          <Zap className="h-10 w-10 mr-3 text-yellow-500" /> ThoughtSwap
+        </h1>
+        <p className="text-xl text-gray-600 mb-10">Log in with your Canvas credentials to start.</p>
 
-        <a href={CANVAS_AUTH_URL} className="login-btn">
-          Login with Canvas
+        <a
+          href={CANVAS_AUTH_URL}
+          className="px-8 py-4 bg-indigo-600 text-white font-bold text-lg rounded-xl shadow-lg hover:bg-indigo-700 transition duration-200 flex items-center space-x-2"
+        >
+          <Users className="h-6 w-6" />
+          <span>Login with Canvas</span>
         </a>
       </div>
     );
@@ -76,30 +87,33 @@ function App() {
 
   // If logged in, show the appropriate view
   return (
-    <div className="App">
-      <header className="auth-header">
-        Logged in as: <strong>{authState.name}</strong> ({authState.role})
+    <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
+      <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
+        <div className="flex items-center space-x-3">
+          <Zap className="h-6 w-6 text-indigo-500" />
+          <h1 className="text-2xl font-bold text-gray-900">ThoughtSwap</h1>
+        </div>
+        <div className="flex items-center space-x-4">
+          <span className="text-sm font-medium text-gray-600">
+            {authState.name} ({authState.role})
+          </span>
+          <button
+            onClick={handleLogout}
+            className="flex items-center space-x-1 text-red-500 hover:text-red-700 transition"
+          >
+            <LogOut className="h-5 w-5" />
+            <span className="hidden sm:inline">Logout</span>
+          </button>
+        </div>
       </header>
 
-      {authState.role === 'TEACHER' && <TeacherView />}
-
-      {authState.role === 'STUDENT' && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2rem' }}>
-          <h1>Student Dashboard</h1>
-          <div className="card">
-            <h3>Join a Course</h3>
-            <input
-              placeholder="Room Code"
-              value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value)}
-              style={{ display: 'block', width: '100%', marginBottom: '10px', padding: '8px' }}
-            />
-            <button onClick={handleStudentJoin} style={{ width: '100%' }}>Join Room</button>
-          </div>
-          {/* Display StudentView only after successful join, for now it's just a button */}
-          {joinCode && <StudentView joinCode={joinCode} />}
-        </div>
-      )}
+      {authState.role === 'TEACHER' ?
+        <TeacherView /> :
+        <StudentView
+          onJoin={handleStudentJoin}
+          joinCode={joinCode}
+        />
+      }
     </div>
   );
 }
