@@ -7,11 +7,25 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id               String   @id @default(uuid())
+  canvasId         String   @unique // Unique ID provided by Canvas
+  name             String
+  email            String   @unique
+  role             String   @default("STUDENT") // STUDENT or TEACHER
+  accessToken      String
+  refreshToken     String?  // Needed for token refresh
+  
+  // Future relations for course and thoughts will go here
+  @@map("users")
+}
+
 model Course {
   id        String   @id @default(uuid())
   joinCode  String   @unique
   title     String
   sessions  Session[]
+  @@map("courses")
 }
 
 model Session {
