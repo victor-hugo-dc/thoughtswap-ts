@@ -11,18 +11,27 @@ interface AuthState {
   name: string | null;
   email: string | null;
   role: UserRole;
+  expiry?: number; // Timestamp for session expiry
 }
+
+// 24 Hours in milliseconds
+const SESSION_DURATION = 24 * 60 * 60 * 1000;
 
 function App() {
   const [authState, setAuthState] = useState<AuthState>(() => {
     const saved = localStorage.getItem('thoughtswap_auth');
-    return saved ? JSON.parse(saved) : {
-      isLoggedIn: false,
-      name: null,
-      email: null,
-      role: null,
-    };
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Check Expiry
+      if (parsed.expiry && Date.now() > parsed.expiry) {
+        localStorage.removeItem('thoughtswap_auth');
+        return { isLoggedIn: false, name: null, email: null, role: null };
+      }
+      return parsed;
+    }
+    return { isLoggedIn: false, name: null, email: null, role: null };
   });
+
   const [joinCode, setJoinCode] = useState('');
 
   const CANVAS_AUTH_URL = 'http://localhost:8000/accounts/canvas/login/';
@@ -30,13 +39,19 @@ function App() {
   const updateAuth = (newState: AuthState) => {
     setAuthState(newState);
     if (newState.isLoggedIn) {
-      localStorage.setItem('thoughtswap_auth', JSON.stringify(newState));
+      // Add expiry if not present
+      const stateWithExpiry = {
+        ...newState,
+        expiry: newState.expiry || Date.now() + SESSION_DURATION
+      };
+      localStorage.setItem('thoughtswap_auth', JSON.stringify(stateWithExpiry));
     } else {
       localStorage.removeItem('thoughtswap_auth');
     }
   };
 
   useEffect(() => {
+    // 1. OAuth Callback
     if (window.location.pathname === '/auth/success') {
       const params = new URLSearchParams(window.location.search);
       const name = params.get('name');
@@ -49,10 +64,25 @@ function App() {
           name: decodeURIComponent(name),
           email: decodeURIComponent(email),
           role: role,
+          expiry: Date.now() + SESSION_DURATION
         });
       }
       window.history.replaceState({}, document.title, "/");
     }
+
+    // 2. Global Socket Listener for Session Invalidation
+    // This handles the case where the server restarts/DB resets and the user is no longer valid
+    const handleAuthError = () => {
+      alert("Your session has expired or is invalid. Please log in again.");
+      updateAuth({ isLoggedIn: false, name: null, email: null, role: null });
+      socket.disconnect();
+    };
+
+    socket.on('AUTH_ERROR', handleAuthError);
+
+    return () => {
+      socket.off('AUTH_ERROR', handleAuthError);
+    };
   }, []);
 
   const handleDevLogin = () => {
@@ -61,6 +91,7 @@ function App() {
       name: "Dev Teacher",
       email: "teacher@dev.com",
       role: "TEACHER",
+      expiry: Date.now() + SESSION_DURATION
     });
   };
 

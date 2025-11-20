@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw } from 'lucide-react';
+import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, X } from 'lucide-react';
 
 interface AuthData {
     name: string | null;
@@ -18,6 +18,11 @@ interface Participant {
     hasSubmitted: boolean;
 }
 
+interface SavedPrompt {
+    id: string;
+    content: string;
+}
+
 export default function TeacherView({ auth }: TeacherViewProps) {
     const [isActive, setIsActive] = useState(false);
     const [joinCode, setJoinCode] = useState('');
@@ -27,22 +32,24 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     const [submissionCount, setSubmissionCount] = useState(0);
     const [swapComplete, setSwapComplete] = useState(false);
 
+    // Prompt Bank State
+    const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
+    const [showBank, setShowBank] = useState(false);
+
     useEffect(() => {
-        // 1. CRITICAL FIX: Configure Socket Auth before connecting
         socket.auth = {
             name: auth.name,
             role: auth.role,
             email: auth.email
         };
 
-        // 2. Connect if not already connected
         if (!socket.connected) {
             socket.connect();
         }
 
-        // --- EVENT LISTENERS ---
+        socket.emit('GET_SAVED_PROMPTS');
+
         socket.on('CLASS_STARTED', (data: { joinCode: string }) => {
-            console.log("Class started:", data); // Debug log
             setIsActive(true);
             setJoinCode(data.joinCode);
         });
@@ -57,8 +64,11 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             alert("Swap successful! Students are now discussing.");
         });
 
+        socket.on('SAVED_PROMPTS_LIST', (data: SavedPrompt[]) => {
+            setSavedPrompts(data);
+        });
+
         socket.on('ERROR', (data) => {
-            console.error("Socket Error:", data);
             alert(`Error: ${data.message}`);
         });
 
@@ -66,12 +76,12 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             socket.off('CLASS_STARTED');
             socket.off('PARTICIPANTS_UPDATE');
             socket.off('SWAP_COMPLETED');
+            socket.off('SAVED_PROMPTS_LIST');
             socket.off('ERROR');
         };
-    }, [auth]); // Re-run if auth changes (unlikely during session)
+    }, [auth]);
 
     const startClass = () => {
-        console.log("Emitting TEACHER_START_CLASS...");
         socket.emit('TEACHER_START_CLASS');
     };
 
@@ -80,6 +90,17 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         socket.emit('TEACHER_SEND_PROMPT', { joinCode, content: promptInput });
         setPromptSent(true);
         setSwapComplete(false);
+    };
+
+    const saveToBank = () => {
+        if (!promptInput.trim()) return;
+        socket.emit('SAVE_PROMPT', { content: promptInput });
+        alert("Prompt saved to bank!");
+    };
+
+    const loadPrompt = (content: string) => {
+        setPromptInput(content);
+        setShowBank(false);
     };
 
     const triggerSwap = () => {
@@ -103,6 +124,37 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         navigator.clipboard.writeText(joinCode);
     };
 
+    const renderBankModal = () => {
+        if (!showBank) return null;
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+                    <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                        <h3 className="font-bold text-gray-700 flex items-center">
+                            <BookOpen className="w-5 h-5 mr-2 text-indigo-600" /> Saved Prompts
+                        </h3>
+                        <button onClick={() => setShowBank(false)} className="text-gray-400 hover:text-gray-600">
+                            <X className="w-6 h-6" />
+                        </button>
+                    </div>
+                    <div className="p-4 overflow-y-auto flex-1 space-y-2">
+                        {savedPrompts.length === 0 ? (
+                            <p className="text-center text-gray-400 italic py-10">No saved prompts yet.</p>
+                        ) : (
+                            savedPrompts.map(p => (
+                                <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group"
+                                    onClick={() => loadPrompt(p.content)}>
+                                    <p className="text-gray-800 text-sm">{p.content}</p>
+                                    <span className="text-xs text-indigo-600 mt-2 hidden group-hover:inline-block font-bold">Click to Load</span>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     // --- IDLE STATE ---
     if (!isActive) {
         return (
@@ -112,7 +164,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         <Play className="w-8 h-8 text-indigo-600 ml-1" />
                     </div>
                     <h2 className="text-3xl font-bold text-gray-800 mb-4">Start a New Class</h2>
-                    <p className="text-gray-600 mb-8">Create a temporary room for your students to join. This will generate a unique 6-character code.</p>
+                    <p className="text-gray-600 mb-8">Create a temporary room for your students to join.</p>
                     <button
                         onClick={startClass}
                         className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105"
@@ -126,7 +178,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
 
     // --- ACTIVE DASHBOARD ---
     return (
-        <div className="max-w-6xl mx-auto space-y-8 pb-20">
+        <div className="max-w-6xl mx-auto space-y-8 pb-20 relative">
+            {renderBankModal()}
+
             {/* Header Stats */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center">
                 <div className="flex items-center space-x-4 mb-4 sm:mb-0">
@@ -165,10 +219,18 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                 <div className="lg:col-span-2 space-y-6">
                     <div className={`p-6 rounded-xl shadow-lg border-t-4 transition-all ${promptSent ? 'bg-gray-50 border-gray-300' : 'bg-white border-indigo-500'
                         }`}>
-                        <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
-                            <Send className={`w-5 h-5 mr-2 ${promptSent ? 'text-gray-400' : 'text-indigo-500'}`} />
-                            Step 1: Send Prompt
-                        </h3>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-bold text-gray-800 flex items-center">
+                                <Send className={`w-5 h-5 mr-2 ${promptSent ? 'text-gray-400' : 'text-indigo-500'}`} />
+                                Step 1: Send Prompt
+                            </h3>
+                            {!promptSent && (
+                                <button onClick={() => setShowBank(true)} className="text-sm text-indigo-600 font-semibold flex items-center hover:underline">
+                                    <BookOpen className="w-4 h-4 mr-1" /> Open Prompt Bank
+                                </button>
+                            )}
+                        </div>
+
                         <div className="flex space-x-2">
                             <input
                                 type="text"
@@ -178,6 +240,15 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                 className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition disabled:bg-gray-100"
                                 disabled={promptSent}
                             />
+                            {!promptSent && promptInput.trim().length > 0 && (
+                                <button
+                                    onClick={saveToBank}
+                                    title="Save to Bank"
+                                    className="px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg border border-gray-300"
+                                >
+                                    <Save className="w-5 h-5" />
+                                </button>
+                            )}
                             <button
                                 onClick={sendPrompt}
                                 disabled={promptSent || !promptInput}

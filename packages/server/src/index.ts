@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
-import { Server } from 'socket.io';
+import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { authRouter } from './auth.router.js';
@@ -18,6 +18,15 @@ app.use(cors());
 app.use(express.json());
 
 app.use('/accounts/canvas/login', authRouter);
+
+function generateRoomCode(): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+    for (let i = 0; i < 6; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
 
 function shuffleThoughts(
     thoughts: { content: string, authorId: string }[],
@@ -118,65 +127,61 @@ const io = new Server(httpServer, {
     }
 });
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket: Socket) => {
     console.log('User connected:', socket.id);
 
     // We expect the client to send { email, name, role } in the auth handshake
     const { email, name, role } = socket.handshake.auth;
 
-    // Helper: Find the DB user based on the socket auth
-    // const getDbUser = async () => {
-    //     if (!email) return null;
-    //     return await prisma.user.findUnique({ where: { email } });
-    // };
+    const user = await prisma.user.findUnique({ where: { email } });
 
-    if (!email) {
-        console.log("No email provided in handshake, connection might be unstable for DB ops.");
+    if (!user) {
+        console.log(`Auth failed for ${email}: User not found in DB.`);
+        socket.emit('AUTH_ERROR', { message: "Session invalid or expired. Please log in again." });
+        socket.disconnect();
+        return;
     }
+
+    socket.on('SAVE_PROMPT', async ({ content }) => {
+        if (role !== 'TEACHER') return;
+        await prisma.savedPrompt.create({
+            data: { content, teacherId: user.id }
+        });
+        // Refresh the list for the teacher
+        const prompts = await prisma.savedPrompt.findMany({ where: { teacherId: user.id }, orderBy: { createdAt: 'desc' } });
+        socket.emit('SAVED_PROMPTS_LIST', prompts);
+    });
+
+    socket.on('GET_SAVED_PROMPTS', async () => {
+        if (role !== 'TEACHER') return;
+        const prompts = await prisma.savedPrompt.findMany({ where: { teacherId: user.id }, orderBy: { createdAt: 'desc' } });
+        socket.emit('SAVED_PROMPTS_LIST', prompts);
+    });
 
     socket.on('TEACHER_START_CLASS', async () => {
         if (role !== 'TEACHER') return;
 
-        // Find or Create the Teacher User to get their ID
-        const teacher = await prisma.user.findUnique({ where: { email } });
-        if (!teacher) {
-            socket.emit('ERROR', { message: "Teacher account not found. Did you seed the database?" });
-            return;
+        let joinCode = generateRoomCode();
+        let attempts = 0;
+        while ((await prisma.course.findUnique({ where: { joinCode } })) && attempts < 10) {
+            joinCode = generateRoomCode();
+            attempts++;
         }
 
-        // 1. Upsert a default Course for this teacher (Dev Mode convenience)
-        // In prod, they would select a specific course.
-        const course = await prisma.course.upsert({
-            where: { joinCode: 'TEST01' },
-            update: {},
-            create: {
-                title: 'Dev ThoughtSwap Course',
-                joinCode: 'TEST01',
-                teacherId: teacher.id
+        const course = await prisma.course.create({
+            data: {
+                title: `${name}'s Class ${new Date().toLocaleDateString()}`,
+                joinCode: joinCode,
+                teacherId: user.id
             }
         });
 
-        // 2. Create/Get Active Session
-        let session = await prisma.session.findFirst({
-            where: { courseId: course.id, status: 'ACTIVE' }
+        const session = await prisma.session.create({
+            data: { courseId: course.id, status: 'ACTIVE' }
         });
 
-        if (!session) {
-            session = await prisma.session.create({
-                data: { courseId: course.id, status: 'ACTIVE' }
-            });
-        }
-
-        // 3. Join the teacher to the room
         socket.join(course.joinCode);
-
-        // 4. Respond
-        socket.emit('CLASS_STARTED', {
-            joinCode: course.joinCode,
-            sessionId: session.id
-        });
-
-        // 5. Send initial empty list
+        socket.emit('CLASS_STARTED', { joinCode: course.joinCode, sessionId: session.id });
         broadcastParticipantList(course.joinCode, null);
     });
 
@@ -193,58 +198,49 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Join the socket room
-        socket.join(normalizedCode);
-        console.log(`${name} (${role}) joined room ${normalizedCode}`);
-        socket.emit('JOIN_SUCCESS', { joinCode: normalizedCode, courseTitle: course.title });
-
-        broadcastParticipantList(normalizedCode, null);
-    });
-
-    socket.on('TEACHER_SEND_PROMPT', async ({ joinCode, content }) => {
-        // Validation: Ensure sender is teacher
-        if (role !== 'TEACHER') return;
-
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
-
-        // Get active session
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' }
         });
+
+        if (!session) {
+            socket.emit('ERROR', { message: "This class session has ended." });
+            return;
+        }
+
+        // Join the socket room
+        socket.join(normalizedCode);
+        socket.emit('JOIN_SUCCESS', { joinCode: normalizedCode, courseTitle: course.title });
+
+        const activePrompt = await prisma.promptUse.findFirst({
+            where: { sessionId: session.id },
+            orderBy: { id: 'desc' }
+        });
+        if (activePrompt) {
+            socket.emit('NEW_PROMPT', { content: activePrompt.content, promptUseId: activePrompt.id });
+        }
+
+        broadcastParticipantList(normalizedCode, activePrompt ? activePrompt.id : null);
+    });
+
+    socket.on('TEACHER_SEND_PROMPT', async ({ joinCode, content }) => {
+        if (role !== 'TEACHER') return;
+        const course = await prisma.course.findUnique({ where: { joinCode } });
+        if (!course) return;
+
+        const session = await prisma.session.findFirst({ where: { courseId: course.id, status: 'ACTIVE' } });
         if (!session) return;
 
-        // Create PromptUse in DB
         const promptUse = await prisma.promptUse.create({
-            data: {
-                content,
-                sessionId: session.id
-            }
+            data: { content, sessionId: session.id }
         });
 
-        // Attach promptUseId to the room so we can track submissions
-        // A hacky way to store room state in memory for this socket instance:
-        socket.data.activePromptUseId = promptUse.id;
-
-        // Broadcast to room
-        io.to(joinCode).emit('NEW_PROMPT', {
-            content,
-            promptUseId: promptUse.id
-        });
-        console.log(`Prompt sent to ${joinCode}: ${content}`);
-        // Reset participant list status
+        io.to(joinCode).emit('NEW_PROMPT', { content, promptUseId: promptUse.id });
         broadcastParticipantList(joinCode, promptUse.id);
     });
 
     socket.on('SUBMIT_THOUGHT', async (data) => {
         const { joinCode, content, promptUseId } = data;
         const user = await prisma.user.findUnique({ where: { email } });
-        // const user = await getDbUser();
-
-        if (!user) {
-            console.error("Cannot save thought: User not found in DB");
-            return;
-        }
 
         // If promptUseId isn't provided by client, try to find the latest one (Logic omitted for brevity)
         // For now, we assume the client sends the ID they received in NEW_PROMPT
@@ -316,6 +312,27 @@ io.on('connection', (socket) => {
         socket.emit('SWAP_COMPLETED', { count: Object.keys(assignments).length });
     });
 
+    socket.on('END_SESSION', async ({ joinCode }) => {
+        if (role !== 'TEACHER') return;
+
+        const course = await prisma.course.findUnique({ where: { joinCode } });
+        if (course) {
+            await prisma.session.updateMany({
+                where: { courseId: course.id, status: 'ACTIVE' },
+                data: { status: 'COMPLETED' }
+            });
+        }
+        // Broadcast END to everyone in the room
+        io.to(joinCode).emit('SESSION_ENDED');
+
+        // Force disconnect everyone in the room from the socket room
+        // (Clients will handle the UI redirect on the event)
+        const sockets = await io.in(joinCode).fetchSockets();
+        sockets.forEach(s => {
+            s.leave(joinCode);
+        });
+    });
+
     socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
     });
@@ -324,5 +341,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3001;
 
 httpServer.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on ${FRONTEND_URL}:${PORT}`);
 });

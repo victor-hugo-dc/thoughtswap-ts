@@ -13,22 +13,34 @@ type Status = 'IDLE' | 'JOINED' | 'ANSWERING' | 'SUBMITTED' | 'DISCUSSING';
 export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps) {
     const [status, setStatus] = useState<Status>('IDLE');
     const [inputCode, setInputCode] = useState(joinCode);
-    const [errorMsg, setErrorMsg] = useState<string | null>(null); // New error state
+    const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
     const [prompt, setPrompt] = useState<string>('');
     const [promptUseId, setPromptUseId] = useState<string>('');
     const [swappedThought, setSwappedThought] = useState<string>('');
-
-    // User input
     const [responseInput, setResponseInput] = useState<string>('');
 
     useEffect(() => {
+        // Socket Connection Config
+        if (auth) {
+            socket.auth = {
+                name: auth.name,
+                role: auth.role,
+                email: auth.email
+            };
+        }
+
+        // Event Listeners
         socket.on('JOIN_SUCCESS', () => {
             setStatus('JOINED');
             setErrorMsg(null);
         });
 
-        // 1. Listen for new prompts
+        socket.on('ERROR', (data: { message: string }) => {
+            setErrorMsg(data.message);
+            if (status === 'JOINED') setStatus('IDLE');
+        });
+
         socket.on('NEW_PROMPT', (data: { content: string, promptUseId: string }) => {
             setPrompt(data.content);
             setPromptUseId(data.promptUseId);
@@ -37,14 +49,19 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             setSwappedThought('');
         });
 
-        // 2. Listen for the swapped thought
         socket.on('RECEIVE_SWAP', (data: { content: string }) => {
             setSwappedThought(data.content);
             setStatus('DISCUSSING');
         });
 
-        socket.on('ERROR', (data: { message: string }) => {
-            alert(data.message);
+        // NEW: Handle Teacher Ending Session
+        socket.on('SESSION_ENDED', () => {
+            alert("The class session has ended.");
+            setStatus('IDLE');
+            setInputCode('');
+            setPrompt('');
+            setSwappedThought('');
+            setResponseInput('');
         });
 
         return () => {
@@ -52,37 +69,24 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             socket.off('ERROR');
             socket.off('NEW_PROMPT');
             socket.off('RECEIVE_SWAP');
+            socket.off('SESSION_ENDED');
         };
-    }, [status]);
-
-    const submitResponse = () => {
-        if (!responseInput.trim()) return;
-
-        socket.emit('SUBMIT_THOUGHT', {
-            joinCode,
-            content: responseInput,
-            promptUseId
-        });
-
-        setStatus('SUBMITTED');
-    };
+    }, [status, auth]);
 
     const handleJoinClick = () => {
         if (inputCode.length > 0) {
-            setErrorMsg(null); // Clear previous errors
-
-            socket.auth = {
-                name: auth.name,
-                role: auth.role,
-                email: auth.email
-            };
+            setErrorMsg(null);
             socket.connect();
-
             socket.emit('JOIN_ROOM', { joinCode: inputCode });
-
             onJoin(inputCode);
         }
     }
+
+    const submitResponse = () => {
+        if (!responseInput.trim()) return;
+        socket.emit('SUBMIT_THOUGHT', { joinCode, content: responseInput, promptUseId });
+        setStatus('SUBMITTED');
+    };
 
     const renderContent = () => {
         switch (status) {
@@ -92,7 +96,6 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         <h3 className="text-2xl font-bold mb-4 text-gray-800">Join a Course</h3>
                         <p className="text-gray-600 mb-6">Enter the 6-character room code from your teacher.</p>
 
-                        {/* Error Display */}
                         {errorMsg && (
                             <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg flex items-center text-sm">
                                 <AlertCircle className="w-4 h-4 mr-2 flex-shrink-0" />
@@ -107,7 +110,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                                 value={inputCode}
                                 onChange={(e) => {
                                     setInputCode(e.target.value.toUpperCase());
-                                    setErrorMsg(null); // Clear error on typing
+                                    setErrorMsg(null);
                                 }}
                                 className={`w-full px-4 py-2 border rounded-lg text-center text-xl font-mono tracking-widest uppercase focus:ring-indigo-500 focus:border-indigo-500 ${errorMsg ? 'border-red-500 bg-red-50' : 'border-gray-300'}`}
                                 maxLength={6}
@@ -122,7 +125,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         </div>
                     </div>
                 );
-            // ... Rest of cases (JOINED, ANSWERING, etc) stay the same ...
+
             case 'JOINED':
                 return (
                     <div className="flex flex-col items-center justify-center p-10 bg-white rounded-xl shadow-lg">

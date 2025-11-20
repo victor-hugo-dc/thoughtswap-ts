@@ -16,16 +16,27 @@ model User {
   accessToken  String
   refreshToken String?
   
-  thoughts     Thought[] // Relation to thoughts authored by this user
+  thoughts     Thought[] 
+  savedPrompts SavedPrompt[] // Relation to saved prompts
 
   @@map("users")
+}
+
+model SavedPrompt {
+  id        String   @id @default(uuid())
+  content   String
+  teacherId String
+  teacher   User     @relation(fields: [teacherId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("saved_prompts")
 }
 
 model Course {
   id        String    @id @default(uuid())
   joinCode  String    @unique
   title     String
-  teacherId String    // Added: Link to the teacher (Canvas ID or User ID)
+  teacherId String    
   sessions  Session[]
 
   @@map("courses")
@@ -52,9 +63,9 @@ model Thought {
   content     String
   
   authorId    String
-  author      User      @relation(fields: [authorId], references: [id]) // Relation for referential integrity
+  author      User      @relation(fields: [authorId], references: [id]) 
 
-  assignedTo  String?   // The socket/user ID of the student reviewing this thought
+  assignedTo  String?   
   
   promptUseId String
   promptUse   PromptUse @relation(fields: [promptUseId], references: [id])
