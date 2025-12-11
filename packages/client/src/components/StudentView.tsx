@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Loader2, Users, MessageSquare, CheckCircle, RotateCcw, AlertCircle } from 'lucide-react';
+import { Loader2, Users, MessageSquare, CheckCircle, RotateCcw, AlertCircle, HelpCircle, RefreshCw } from 'lucide-react';
 
 interface StudentViewProps {
     joinCode: string;
@@ -19,6 +19,8 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
     const [promptUseId, setPromptUseId] = useState<string>('');
     const [swappedThought, setSwappedThought] = useState<string>('');
     const [responseInput, setResponseInput] = useState<string>('');
+    
+    const [showHelp, setShowHelp] = useState(false);
 
     useEffect(() => {
         // Socket Connection Config
@@ -86,6 +88,29 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         if (!responseInput.trim()) return;
         socket.emit('SUBMIT_THOUGHT', { joinCode, content: responseInput, promptUseId });
         setStatus('SUBMITTED');
+    };
+
+    const requestNewSwap = () => {
+        socket.emit('STUDENT_REQUEST_NEW_THOUGHT', { joinCode, currentThoughtContent: swappedThought });
+    };
+
+    const renderHelpModal = () => {
+        if (!showHelp) return null;
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 px-4">
+                <div className="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full">
+                    <h3 className="text-xl font-bold mb-3 text-indigo-700">Student Guide</h3>
+                    <ul className="list-disc pl-5 space-y-2 text-gray-700 text-sm">
+                        <li>Enter the 6-letter room code provided by your teacher.</li>
+                        <li>Wait for the prompt to appear on your screen.</li>
+                        <li>Type your anonymous response and submit it.</li>
+                        <li>Wait for the "Swap". You will receive a peer's thought to discuss.</li>
+                        <li>If the thought you receive is blank or confusing, you can request a new one.</li>
+                    </ul>
+                    <button onClick={() => setShowHelp(false)} className="mt-5 w-full py-2 bg-indigo-100 hover:bg-indigo-200 text-indigo-800 rounded-lg font-bold transition">Got it!</button>
+                </div>
+            </div>
+        );
     };
 
     const renderContent = () => {
@@ -176,9 +201,18 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                             <h3 className="text-3xl font-extrabold">Peer Review Time!</h3>
                         </div>
                         <p className="text-lg text-gray-700 mb-6">Discuss this anonymous peer's thought:</p>
-                        <blockquote className="bg-white p-4 sm:p-6 rounded-lg border-l-8 border-yellow-500 italic text-xl shadow-inner text-gray-800">
+                        <blockquote className="bg-white p-4 sm:p-6 rounded-lg border-l-8 border-yellow-500 italic text-xl shadow-inner text-gray-800 mb-6">
                             "{swappedThought}"
                         </blockquote>
+                        
+                        <div className="flex justify-end">
+                            <button 
+                                onClick={requestNewSwap}
+                                className="text-sm text-indigo-600 hover:text-indigo-800 underline flex items-center font-semibold"
+                            >
+                                <RefreshCw className="w-4 h-4 mr-1" /> Request a different thought
+                            </button>
+                        </div>
                     </div>
                 );
             default: return null;
@@ -186,10 +220,16 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
     };
 
     return (
-        <div className="flex flex-col items-center justify-start py-8 w-full">
-            <h2 className="text-3xl font-light text-gray-700 mb-8">
-                Course Room: <span className='font-bold text-indigo-500'>{joinCode || '...'}</span>
-            </h2>
+        <div className="flex flex-col items-center justify-start py-8 w-full relative">
+            {renderHelpModal()}
+            <div className='w-full max-w-4xl flex justify-between items-center mb-8 px-4'>
+                <h2 className="text-3xl font-light text-gray-700">
+                    Course Room: <span className='font-bold text-indigo-500'>{joinCode || '...'}</span>
+                </h2>
+                <button onClick={() => setShowHelp(true)} className='text-gray-400 hover:text-indigo-600 p-2'>
+                    <HelpCircle className="w-8 h-8" />
+                </button>
+            </div>
             {renderContent()}
         </div>
     );

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, X } from 'lucide-react';
+import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, X, Trash2, HelpCircle, Eye } from 'lucide-react';
 
 interface AuthData {
     name: string | null;
@@ -23,6 +23,12 @@ interface SavedPrompt {
     content: string;
 }
 
+interface Thought {
+    id: string;
+    content: string;
+    authorName: string;
+}
+
 export default function TeacherView({ auth }: TeacherViewProps) {
     const [isActive, setIsActive] = useState(false);
     const [joinCode, setJoinCode] = useState('');
@@ -31,10 +37,12 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     const [participants, setParticipants] = useState<Participant[]>([]);
     const [submissionCount, setSubmissionCount] = useState(0);
     const [swapComplete, setSwapComplete] = useState(false);
+    const [liveThoughts, setLiveThoughts] = useState<Thought[]>([]);
 
     // Prompt Bank State
     const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
     const [showBank, setShowBank] = useState(false);
+    const [showHelp, setShowHelp] = useState(false);
 
     useEffect(() => {
         socket.auth = {
@@ -59,6 +67,10 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setSubmissionCount(data.submissionCount);
         });
 
+        socket.on('THOUGHTS_UPDATE', (data: Thought[]) => {
+            setLiveThoughts(data);
+        });
+
         socket.on('SWAP_COMPLETED', () => {
             setSwapComplete(true);
             alert("Swap successful! Students are now discussing.");
@@ -75,6 +87,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         return () => {
             socket.off('CLASS_STARTED');
             socket.off('PARTICIPANTS_UPDATE');
+            socket.off('THOUGHTS_UPDATE');
             socket.off('SWAP_COMPLETED');
             socket.off('SAVED_PROMPTS_LIST');
             socket.off('ERROR');
@@ -107,6 +120,12 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         socket.emit('TRIGGER_SWAP', { joinCode });
     };
 
+    const deleteThought = (thoughtId: string) => {
+        if (confirm("Are you sure you want to delete this thought? It will be removed from the session.")) {
+            socket.emit('TEACHER_DELETE_THOUGHT', { joinCode, thoughtId });
+        }
+    };
+
     const endSession = () => {
         if (confirm("Are you sure you want to end the session? All students will be disconnected.")) {
             socket.emit('END_SESSION', { joinCode });
@@ -117,6 +136,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setPromptInput('');
             setSwapComplete(false);
             setSubmissionCount(0);
+            setLiveThoughts([]);
         }
     };
 
@@ -155,6 +175,24 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         );
     };
 
+    const renderHelpModal = () => {
+        if (!showHelp) return null;
+        return (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div className="bg-white p-8 rounded-xl shadow-2xl max-w-lg">
+                    <h3 className="text-2xl font-bold mb-4 text-indigo-700">How to use ThoughtSwap</h3>
+                    <ul className="list-disc pl-5 space-y-2 text-gray-700">
+                        <li><strong>Step 1:</strong> Send a prompt to your students.</li>
+                        <li><strong>Step 2:</strong> Wait for students to submit their answers. You can review them in real-time.</li>
+                        <li><strong>Step 3:</strong> Click "Swap Thoughts" to randomly distribute answers anonymously.</li>
+                        <li><strong>Monitoring:</strong> Use the trash icon to delete inappropriate thoughts before swapping.</li>
+                    </ul>
+                    <button onClick={() => setShowHelp(false)} className="mt-6 w-full py-2 bg-gray-200 hover:bg-gray-300 rounded-lg font-semibold">Close</button>
+                </div>
+            </div>
+        );
+    };
+
     // --- IDLE STATE ---
     if (!isActive) {
         return (
@@ -180,6 +218,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     return (
         <div className="max-w-6xl mx-auto space-y-8 pb-20 relative">
             {renderBankModal()}
+            {renderHelpModal()}
 
             {/* Header Stats */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center">
@@ -205,6 +244,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         <p className="text-xs text-gray-500 uppercase font-bold">Submitted</p>
                         <p className="text-3xl font-bold text-indigo-600">{submissionCount}</p>
                     </div>
+                    <button onClick={() => setShowHelp(true)} className="p-2 text-gray-400 hover:text-indigo-600">
+                        <HelpCircle className="w-6 h-6" />
+                    </button>
                     <button
                         onClick={endSession}
                         className="ml-4 px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition flex items-center text-sm font-bold"
@@ -266,7 +308,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                     <CheckCircle className="w-4 h-4 mr-1" /> Prompt is live on student devices.
                                 </p>
                                 <button
-                                    onClick={() => { setPromptSent(false); setPromptInput(''); setSubmissionCount(0); setSwapComplete(false); }}
+                                    onClick={() => { setPromptSent(false); setPromptInput(''); setSubmissionCount(0); setSwapComplete(false); setLiveThoughts([]); }}
                                     className="text-indigo-600 hover:underline flex items-center"
                                 >
                                     <RefreshCw className="w-3 h-3 mr-1" /> New Prompt
@@ -299,10 +341,41 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                             <Shuffle className="w-6 h-6 mr-2" />
                             {swapComplete ? 'Swap Completed' : `Swap Thoughts (${submissionCount})`}
                         </button>
-                        {submissionCount < 2 && !swapComplete && (
-                            <p className="text-center text-sm text-gray-400 mt-3">Waiting for at least 2 submissions...</p>
-                        )}
                     </div>
+
+                    {/* LIVE THOUGHTS MODERATION */}
+                    {promptSent && (
+                        <div className="bg-white rounded-xl shadow-lg border-t-4 border-indigo-400 p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-xl font-bold text-gray-800 flex items-center">
+                                    <Eye className="w-5 h-5 mr-2 text-indigo-600" />
+                                    Live Thoughts ({liveThoughts.length})
+                                </h3>
+                                <span className="text-xs text-gray-400">Incoming submissions</span>
+                            </div>
+                            <div className="max-h-60 overflow-y-auto space-y-2 border border-gray-100 rounded-lg p-2 bg-gray-50">
+                                {liveThoughts.length === 0 ? (
+                                    <p className="text-gray-400 text-center text-sm py-4 italic">Waiting for submissions...</p>
+                                ) : (
+                                    liveThoughts.map((thought) => (
+                                        <div key={thought.id} className="bg-white p-3 rounded-md shadow-sm border border-gray-200 flex justify-between items-start group">
+                                            <div>
+                                                <p className="text-gray-800 text-sm">{thought.content}</p>
+                                                <p className="text-xs text-gray-400 mt-1">{thought.authorName}</p>
+                                            </div>
+                                            <button 
+                                                onClick={() => deleteThought(thought.id)}
+                                                className="text-red-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition"
+                                                title="Delete Thought"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Roster */}

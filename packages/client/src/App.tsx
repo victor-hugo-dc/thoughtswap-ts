@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { socket } from './socket';
 import StudentView from './components/StudentView';
 import TeacherView from './components/TeacherView';
-import { LogOut, Users, Zap, Bug } from 'lucide-react';
+import { LogOut, Users, Zap, Play, GraduationCap } from 'lucide-react';
 
 type UserRole = 'STUDENT' | 'TEACHER' | null;
 
@@ -34,6 +34,7 @@ function App() {
 
   const [joinCode, setJoinCode] = useState('');
 
+  // TODO: Change the following to the correct Canvas Auth URL
   const CANVAS_AUTH_URL = 'http://localhost:8000/accounts/canvas/login/';
 
   const updateAuth = (newState: AuthState) => {
@@ -71,7 +72,6 @@ function App() {
     }
 
     // 2. Global Socket Listener for Session Invalidation
-    // This handles the case where the server restarts/DB resets and the user is no longer valid
     const handleAuthError = () => {
       alert("Your session has expired or is invalid. Please log in again.");
       updateAuth({ isLoggedIn: false, name: null, email: null, role: null });
@@ -85,12 +85,13 @@ function App() {
     };
   }, []);
 
-  const handleDevLogin = () => {
+  const handleDemoLogin = (role: UserRole) => {
+    const randomId = Math.floor(Math.random() * 10000);
     updateAuth({
       isLoggedIn: true,
-      name: "Dev Teacher",
-      email: "teacher@dev.com",
-      role: "TEACHER",
+      name: role === 'TEACHER' ? `Guest Teacher ${randomId}` : `Guest Student ${randomId}`,
+      email: `guest_${role?.toLowerCase()}_${randomId}@demo.com`, // Special prefix for server detection
+      role: role,
       expiry: Date.now() + SESSION_DURATION
     });
   };
@@ -107,26 +108,55 @@ function App() {
 
   if (!authState.isLoggedIn) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen p-4">
-        <h1 className="text-5xl font-extrabold text-indigo-700 mb-8 flex items-center">
-          <Zap className="h-10 w-10 mr-3 text-yellow-500" /> ThoughtSwap
-        </h1>
-        <p className="text-xl text-gray-600 mb-10">Log in with your Canvas credentials to start.</p>
+      <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-b from-gray-50 to-indigo-50">
+        <div className="bg-white p-10 rounded-3xl shadow-2xl w-full max-w-2xl border border-gray-100">
+          <div className="text-center mb-10">
+            <h1 className="text-5xl font-extrabold text-indigo-700 mb-4 flex items-center justify-center">
+              <Zap className="h-12 w-12 mr-3 text-yellow-500 fill-current" /> ThoughtSwap
+            </h1>
+            <p className="text-xl text-gray-500">Real-time anonymous peer review for classrooms.</p>
+          </div>
 
-        <a
-          href={CANVAS_AUTH_URL}
-          className="px-8 py-4 bg-indigo-600 text-white font-bold text-lg rounded-xl shadow-lg hover:bg-indigo-700 transition duration-200 flex items-center space-x-2 mb-4"
-        >
-          <Users className="h-6 w-6" />
-          <span>Login with Canvas</span>
-        </a>
+          <div className="space-y-6">
+            <a
+              href={CANVAS_AUTH_URL}
+              className="w-full px-8 py-5 bg-indigo-600 text-white font-bold text-lg rounded-2xl shadow-lg hover:bg-indigo-700 hover:shadow-xl transition duration-200 flex items-center justify-center space-x-3 transform hover:-translate-y-1"
+            >
+              <Users className="h-6 w-6" />
+              <span>Login with Canvas</span>
+            </a>
 
-        <button
-          onClick={handleDevLogin}
-          className="mt-8 px-6 py-2 bg-gray-200 text-gray-700 font-semibold rounded-lg hover:bg-gray-300 transition flex items-center"
-        >
-          <Bug className="w-5 h-5 mr-2" /> Dev Teacher Login
-        </button>
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-white text-gray-500">Or try Demonstration Mode</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <button
+                onClick={() => handleDemoLogin('TEACHER')}
+                className="px-6 py-4 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex flex-col items-center justify-center space-y-2 group"
+              >
+                <div className="p-2 bg-indigo-100 rounded-full group-hover:bg-indigo-200 transition">
+                  <GraduationCap className="w-6 h-6" />
+                </div>
+                <span>Demo Teacher</span>
+              </button>
+              <button
+                onClick={() => handleDemoLogin('STUDENT')}
+                className="px-6 py-4 bg-white border-2 border-green-100 text-green-600 font-bold rounded-xl hover:bg-green-50 transition flex flex-col items-center justify-center space-y-2 group"
+              >
+                <div className="p-2 bg-green-100 rounded-full group-hover:bg-green-200 transition">
+                  <Play className="w-6 h-6" />
+                </div>
+                <span>Demo Student</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -140,7 +170,7 @@ function App() {
         </div>
         <div className="flex items-center space-x-4">
           <span className="text-sm font-medium text-gray-600">
-            {authState.name} ({authState.role})
+            {authState.name} <span className="bg-gray-100 px-2 py-1 rounded text-xs ml-1 border border-gray-200">{authState.role}</span>
           </span>
           <button
             onClick={handleLogout}

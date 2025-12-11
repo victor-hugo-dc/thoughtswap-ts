@@ -70,3 +70,13 @@ model Thought {
   promptUseId String
   promptUse   PromptUse @relation(fields: [promptUseId], references: [id])
 }
+
+model Log {
+  id        String   @id @default(uuid())
+  event     String
+  userId    String?
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@map("logs")
+}
