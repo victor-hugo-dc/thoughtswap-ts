@@ -12,7 +12,7 @@ interface AuthState {
   name: string | null;
   email: string | null;
   role: UserRole;
-  expiry?: number; // Timestamp for session expiry
+  expiry?: number;
 }
 
 // 24 Hours in milliseconds
@@ -23,7 +23,6 @@ function App() {
     const saved = localStorage.getItem('thoughtswap_auth');
     if (saved) {
       const parsed = JSON.parse(saved);
-      // Check Expiry
       if (parsed.expiry && Date.now() > parsed.expiry) {
         localStorage.removeItem('thoughtswap_auth');
         return { isLoggedIn: false, name: null, email: null, role: null };
@@ -35,6 +34,7 @@ function App() {
 
   const [joinCode, setJoinCode] = useState('');
   const [authErrorModal, setAuthErrorModal] = useState(false);
+  const [showConsentModal, setShowConsentModal] = useState(false);
 
   // TODO: Change the following to the correct Canvas Auth URL
   const CANVAS_AUTH_URL = 'http://localhost:8000/accounts/canvas/login/';
@@ -42,7 +42,6 @@ function App() {
   const updateAuth = (newState: AuthState) => {
     setAuthState(newState);
     if (newState.isLoggedIn) {
-      // Add expiry if not present
       const stateWithExpiry = {
         ...newState,
         expiry: newState.expiry || Date.now() + SESSION_DURATION
@@ -54,7 +53,6 @@ function App() {
   };
 
   useEffect(() => {
-    // 1. OAuth Callback
     if (window.location.pathname === '/auth/success') {
       const params = new URLSearchParams(window.location.search);
       const name = params.get('name');
@@ -73,26 +71,52 @@ function App() {
       window.history.replaceState({}, document.title, "/");
     }
 
-    // 2. Global Socket Listener for Session Invalidation
     const handleAuthError = () => {
       setAuthErrorModal(true);
       updateAuth({ isLoggedIn: false, name: null, email: null, role: null });
       socket.disconnect();
     };
 
+    const handleConsentStatus = (data: { consentGiven: boolean, consentDate: string | null }) => {
+      // If consent hasn't been explicitly given (we assume false means declined/not given yet), 
+      // we check if they have a date. If date is null, they haven't decided.
+      if (data.consentDate === null) {
+        setShowConsentModal(true);
+      }
+    };
+
     socket.on('AUTH_ERROR', handleAuthError);
+    socket.on('CONSENT_STATUS', handleConsentStatus);
 
     return () => {
       socket.off('AUTH_ERROR', handleAuthError);
+      socket.off('CONSENT_STATUS', handleConsentStatus);
     };
   }, []);
+
+  // Connect socket early to check consent if logged in
+  useEffect(() => {
+    if (authState.isLoggedIn && !socket.connected) {
+      socket.auth = {
+        name: authState.name,
+        role: authState.role,
+        email: authState.email
+      };
+      socket.connect();
+    }
+  }, [authState]);
+
+  const handleConsentResponse = (gaveConsent: boolean) => {
+    socket.emit('UPDATE_CONSENT', { consentGiven: gaveConsent });
+    setShowConsentModal(false);
+  };
 
   const handleDemoLogin = (role: UserRole) => {
     const randomId = Math.floor(Math.random() * 10000);
     updateAuth({
       isLoggedIn: true,
       name: role === 'TEACHER' ? `Guest Teacher ${randomId}` : `Guest Student ${randomId}`,
-      email: `guest_${role?.toLowerCase()}_${randomId}@demo.com`, // Special prefix for server detection
+      email: `guest_${role?.toLowerCase()}_${randomId}@demo.com`,
       role: role,
       expiry: Date.now() + SESSION_DURATION
     });
@@ -173,6 +197,24 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
+
+      {/* Consent Modal */}
+      <Modal
+        isOpen={showConsentModal}
+        onClose={() => handleConsentResponse(false)} // Auto-decline on close/X
+        title="Research Consent"
+        type="confirm"
+        confirmText="I Consent"
+        cancelText="I Decline"
+        onConfirm={() => handleConsentResponse(true)}
+      >
+        <div className="space-y-4 text-sm text-gray-600">
+          <p>Welcome to ThoughtSwap! This application is part of a research project on classroom interaction.</p>
+          <p>By clicking "I Consent", you agree to allow your anonymized usage data (prompts, thoughts, interaction logs) to be used for research purposes.</p>
+          <p>You can still use the application if you decline, but your data will be excluded from research analysis.</p>
+        </div>
+      </Modal>
+
       <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
         <div className="flex items-center space-x-3">
           <Zap className="h-6 w-6 text-indigo-500" />

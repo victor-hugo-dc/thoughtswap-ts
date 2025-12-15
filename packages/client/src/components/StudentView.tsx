@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { socket } from '../socket';
 import { Loader2, Users, MessageSquare, CheckCircle, RotateCcw, AlertCircle, HelpCircle, RefreshCw, Bell } from 'lucide-react';
 import Modal from './Modal';
@@ -30,6 +30,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         type: ModalType;
         title: string;
         message: string;
+        children?: React.ReactNode;
     }>({
         isOpen: false,
         type: 'info',
@@ -40,23 +41,31 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
     // 1. Persist Session on Load
     useEffect(() => {
         const storedJoinCode = localStorage.getItem('thoughtswap_joinCode');
-        // Only attempt rejoin if we have a code and aren't already connected/joined
-        if (storedJoinCode && status === 'IDLE' && !socket.connected) {
+
+        // If we have a stored code and are IDLE, try to rejoin
+        if (storedJoinCode && status === 'IDLE') {
+            console.log("Restoring session for:", storedJoinCode);
             setInputCode(storedJoinCode);
-            onJoin(storedJoinCode);
-            // Connect and Rejoin
-            socket.auth = {
-                name: auth.name,
-                role: auth.role,
-                email: auth.email
-            };
-            socket.connect();
+            onJoin(storedJoinCode); // Sync up parent state if needed
+
+            // Ensure socket is configured and connected
+            if (!socket.auth) {
+                socket.auth = {
+                    name: auth.name,
+                    role: auth.role,
+                    email: auth.email
+                };
+            }
+            if (!socket.connected) {
+                socket.connect();
+            }
+
+            // Emit join request
             socket.emit('JOIN_ROOM', { joinCode: storedJoinCode });
         }
-    }, [auth, status]);
+    }, [auth, status]); // Run when auth is ready or status is idle
 
     useEffect(() => {
-        // Socket Connection Config if not already done in the re-join block
         if (auth && !socket.auth) {
             socket.auth = {
                 name: auth.name,
@@ -70,19 +79,18 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         socket.on('JOIN_SUCCESS', (data: { joinCode: string }) => {
             setStatus('JOINED');
             requestNotificationPermission();
-            // Save to localStorage for persistence
             localStorage.setItem('thoughtswap_joinCode', data.joinCode);
         });
 
         socket.on('ERROR', (data: { message: string }) => {
             setModal({ isOpen: true, type: 'error', title: 'Error', message: data.message });
-            if (status === 'JOINED' && data.message.includes('ended')) {
+            // If we get an error while joined or trying to join, clear persistence if it's a "fatal" error
+            if (data.message.includes('ended') || data.message.includes('Invalid')) {
                 setStatus('IDLE');
-                localStorage.removeItem('thoughtswap_joinCode'); // Clear on valid exit
+                localStorage.removeItem('thoughtswap_joinCode');
             }
         });
 
-        // New Event: Restore State from Server (e.g., if already submitted)
         socket.on('RESTORE_STATE', (data: { status: Status, prompt: string, promptUseId: string }) => {
             setPrompt(data.prompt);
             setPromptUseId(data.promptUseId);
@@ -105,21 +113,39 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             sendNotification("New Thought Received", "You have received a peer's thought to discuss.");
         });
 
-        // Handle Deletion by Teacher
         socket.on('THOUGHT_DELETED', (data: { message: string }) => {
             setModal({ isOpen: true, type: 'warning', title: 'Response Removed', message: data.message });
-            setStatus('ANSWERING'); // Reset to answering state
-            setResponseInput(''); // Clear input so they write fresh
+            setStatus('ANSWERING');
+            setResponseInput('');
         });
 
-        socket.on('SESSION_ENDED', () => {
-            setModal({ isOpen: true, type: 'info', title: 'Session Ended', message: "The class session has ended." });
+        socket.on('SESSION_ENDED', (data: { surveyLink?: string }) => {
             setStatus('IDLE');
             setInputCode('');
             setPrompt('');
             setSwappedThought('');
             setResponseInput('');
-            localStorage.removeItem('thoughtswap_joinCode'); // Clean up
+            localStorage.removeItem('thoughtswap_joinCode');
+
+            setModal({
+                isOpen: true,
+                type: 'info',
+                title: 'Session Ended',
+                message: "The class session has ended.",
+                children: data.surveyLink ? (
+                    <div className="text-center mt-2">
+                        <p className="mb-4 text-gray-600">Please help us improve by taking a short survey:</p>
+                        <a
+                            href={data.surveyLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-block bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-indigo-700 transition"
+                        >
+                            Take Survey
+                        </a>
+                    </div>
+                ) : undefined
+            });
         });
 
         return () => {
@@ -148,8 +174,6 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
 
     const handleJoinClick = () => {
         if (inputCode.length > 0) {
-            // Note: We don't set auth here anymore, we assume it's set in useEffect or passed down
-            // But we ensure it's connected
             if (!socket.connected) {
                 socket.auth = {
                     name: auth.name,
@@ -165,7 +189,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
 
     const submitResponse = () => {
         if (!responseInput.trim()) return;
-        socket.emit('SUBMIT_THOUGHT', { joinCode: inputCode, content: responseInput, promptUseId }); // Use inputCode which matches state
+        socket.emit('SUBMIT_THOUGHT', { joinCode: inputCode, content: responseInput, promptUseId });
         setStatus('SUBMITTED');
     };
 
@@ -303,7 +327,9 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                 title={modal.title}
                 message={modal.message}
                 type={modal.type}
-            />
+            >
+                {modal.children}
+            </Modal>
             {renderHelpModal()}
             <div className='w-full max-w-4xl flex justify-between items-center mb-8 px-4'>
                 <h2 className="text-3xl font-light text-gray-700">

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, Trash2, HelpCircle, Eye, Settings, Plus } from 'lucide-react';
+import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, Trash2, HelpCircle, Eye, Settings, ArrowRight } from 'lucide-react';
 import Modal from './Modal';
 import type { ModalType } from './Modal';
 
@@ -31,6 +31,12 @@ interface Thought {
     authorName: string;
 }
 
+interface DistributionItem {
+    studentName: string;
+    thoughtContent: string;
+    originalAuthorName: string;
+}
+
 export default function TeacherView({ auth }: TeacherViewProps) {
     const [isActive, setIsActive] = useState(false);
     const [joinCode, setJoinCode] = useState('');
@@ -41,6 +47,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     const [swapComplete, setSwapComplete] = useState(false);
     const [liveThoughts, setLiveThoughts] = useState<Thought[]>([]);
     const [maxSwapRequests, setMaxSwapRequests] = useState(1);
+    const [distribution, setDistribution] = useState<Record<string, DistributionItem>>({});
 
     // Prompt Bank State
     const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
@@ -52,6 +59,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         type: ModalType;
         title: string;
         message: string;
+        children?: React.ReactNode;
         onConfirm?: () => void;
     }>({
         isOpen: false,
@@ -65,14 +73,20 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         const storedJoinCode = localStorage.getItem('thoughtswap_joinCode');
         const storedIsTeacherActive = localStorage.getItem('thoughtswap_teacher_active');
 
-        if (storedJoinCode && storedIsTeacherActive === 'true' && !isActive && !socket.connected) {
-            socket.auth = {
-                name: auth.name,
-                role: auth.role,
-                email: auth.email
-            };
-            socket.connect();
-            // Try to rejoin as teacher
+        // Check if we should restore session, disregarding !socket.connected check
+        // because App.tsx might have already connected it.
+        if (storedJoinCode && storedIsTeacherActive === 'true' && !isActive) {
+            console.log("Restoring teacher session:", storedJoinCode);
+            if (!socket.auth) {
+                socket.auth = {
+                    name: auth.name,
+                    role: auth.role,
+                    email: auth.email
+                };
+            }
+            if (!socket.connected) {
+                socket.connect();
+            }
             socket.emit('TEACHER_REJOIN', { joinCode: storedJoinCode });
         }
     }, [auth, isActive]);
@@ -97,7 +111,6 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setJoinCode(data.joinCode);
             setMaxSwapRequests(data.maxSwapRequests || 1);
 
-            // Persist
             localStorage.setItem('thoughtswap_joinCode', data.joinCode);
             localStorage.setItem('thoughtswap_teacher_active', 'true');
         });
@@ -110,9 +123,12 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         socket.on('THOUGHTS_UPDATE', (data: Thought[]) => {
             setLiveThoughts(data);
             if (data.length > 0 && !promptSent) {
-                // If we are recovering state and see thoughts, assume prompt was sent
                 setPromptSent(true);
             }
+        });
+
+        socket.on('DISTRIBUTION_UPDATE', (data: Record<string, DistributionItem>) => {
+            setDistribution(data);
         });
 
         socket.on('SWAP_COMPLETED', () => {
@@ -127,7 +143,6 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         socket.on('ERROR', (data) => {
             showModal('error', 'Error', data.message);
             if (data.message.includes('ended') || data.message.includes('Invalid')) {
-                // Clear persistence if session is gone
                 localStorage.removeItem('thoughtswap_joinCode');
                 localStorage.removeItem('thoughtswap_teacher_active');
                 setIsActive(false);
@@ -138,14 +153,15 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             socket.off('CLASS_STARTED');
             socket.off('PARTICIPANTS_UPDATE');
             socket.off('THOUGHTS_UPDATE');
+            socket.off('DISTRIBUTION_UPDATE');
             socket.off('SWAP_COMPLETED');
             socket.off('SAVED_PROMPTS_LIST');
             socket.off('ERROR');
         };
     }, [auth]);
 
-    const showModal = (type: ModalType, title: string, message: string, onConfirm?: () => void) => {
-        setModal({ isOpen: true, type, title, message, onConfirm });
+    const showModal = (type: ModalType, title: string, message: string, onConfirm?: () => void, children?: React.ReactNode) => {
+        setModal({ isOpen: true, type, title, message, onConfirm, children });
     };
 
     const startClass = () => {
@@ -157,6 +173,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         socket.emit('TEACHER_SEND_PROMPT', { joinCode, content: promptInput });
         setPromptSent(true);
         setSwapComplete(false);
+        setDistribution({}); // Reset distribution
     };
 
     const saveToBank = () => {
@@ -167,7 +184,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
 
     const deleteFromBank = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
-        if (confirm("Delete this prompt?")) { // Keeping native confirm for simple list action
+        if (confirm("Delete this prompt?")) {
             socket.emit('DELETE_SAVED_PROMPT', { id });
         }
     };
@@ -203,10 +220,28 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setSwapComplete(false);
             setSubmissionCount(0);
             setLiveThoughts([]);
+            setDistribution({});
 
             // Clear persistence
             localStorage.removeItem('thoughtswap_joinCode');
             localStorage.removeItem('thoughtswap_teacher_active');
+
+            // Show Survey Link
+            setTimeout(() => {
+                showModal('info', 'Session Ended', '', undefined, (
+                    <div className="text-center">
+                        <p className="mb-4">Please complete the post-session survey:</p>
+                        <a
+                            href="https://jmu.qualtrics.com/jfe/form/SV_dummy_survey_id"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-blue-700"
+                        >
+                            Take Survey
+                        </a>
+                    </div>
+                ));
+            }, 500);
         });
     };
 
@@ -225,14 +260,11 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                             <BookOpen className="w-5 h-5 mr-2 text-indigo-600" /> Prompt Bank
                         </h3>
                         <button onClick={() => setShowBank(false)} className="text-gray-400 hover:text-gray-600">
-                            <Settings className="w-0 h-0" />
-                            <Trash2 className="w-0 h-0" /> {/* Hidden trigger for icon load */}
+                            <Trash2 className="w-0 h-0" />
                             Close
                         </button>
                     </div>
                     <div className="p-4 overflow-y-auto flex-1 space-y-2">
-
-                        {/* CRUD Creation inside modal if inactive */}
                         {!isActive && (
                             <div className="mb-4 flex gap-2">
                                 <input
@@ -248,26 +280,18 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                 />
                             </div>
                         )}
-
-                        {savedPrompts.length === 0 ? (
-                            <p className="text-center text-gray-400 italic py-10">No saved prompts yet.</p>
-                        ) : (
-                            savedPrompts.map(p => (
-                                <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group flex justify-between items-center"
-                                    onClick={() => loadPrompt(p.content)}>
-                                    <p className="text-gray-800 text-sm flex-1">{p.content}</p>
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-xs text-indigo-600 hidden group-hover:inline-block font-bold">Load</span>
-                                        <button
-                                            onClick={(e) => deleteFromBank(p.id, e)}
-                                            className="p-1 text-red-300 hover:text-red-500 rounded hover:bg-red-50"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
-                                    </div>
+                        {savedPrompts.map(p => (
+                            <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group flex justify-between items-center"
+                                onClick={() => loadPrompt(p.content)}>
+                                <p className="text-gray-800 text-sm flex-1">{p.content}</p>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs text-indigo-600 hidden group-hover:inline-block font-bold">Load</span>
+                                    <button onClick={(e) => deleteFromBank(p.id, e)} className="p-1 text-red-300 hover:text-red-500 rounded hover:bg-red-50">
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
                                 </div>
-                            ))
-                        )}
+                            </div>
+                        ))}
                     </div>
                 </div>
             </div>
@@ -286,7 +310,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     message={modal.message}
                     type={modal.type}
                     onConfirm={modal.onConfirm}
-                />
+                >
+                    {modal.children}
+                </Modal>
 
                 <div className="bg-white p-10 rounded-2xl shadow-xl text-center max-w-lg w-full border border-gray-100">
                     <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -295,7 +321,6 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     <h2 className="text-3xl font-bold text-gray-800 mb-2">Start a New Class</h2>
                     <p className="text-gray-600 mb-8">Create a temporary room for your students.</p>
 
-                    {/* Display Loaded Prompt Feedback */}
                     {promptInput && (
                         <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group">
                             <div className="flex justify-between items-start">
@@ -314,17 +339,11 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         </div>
                     )}
 
-                    <button
-                        onClick={startClass}
-                        className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105 mb-4"
-                    >
+                    <button onClick={startClass} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105 mb-4">
                         Launch Session
                     </button>
 
-                    <button
-                        onClick={() => setShowBank(true)}
-                        className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center"
-                    >
+                    <button onClick={() => setShowBank(true)} className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center">
                         <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
                     </button>
                 </div>
@@ -343,7 +362,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                 message={modal.message}
                 type={modal.type}
                 onConfirm={modal.onConfirm}
-            />
+            >
+                {modal.children}
+            </Modal>
 
             {/* Header Stats */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-center">
@@ -369,10 +390,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         <p className="text-xs text-gray-500 uppercase font-bold">Submitted</p>
                         <p className="text-3xl font-bold text-indigo-600">{submissionCount}</p>
                     </div>
-                    <button
-                        onClick={endSession}
-                        className="ml-4 px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition flex items-center text-sm font-bold"
-                    >
+                    <button onClick={endSession} className="ml-4 px-4 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition flex items-center text-sm font-bold">
                         <Power className="w-4 h-4 mr-2" /> End Class
                     </button>
                 </div>
@@ -381,8 +399,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Controls */}
                 <div className="lg:col-span-2 space-y-6">
-                    <div className={`p-6 rounded-xl shadow-lg border-t-4 transition-all ${promptSent ? 'bg-gray-50 border-gray-300' : 'bg-white border-indigo-500'
-                        }`}>
+                    <div className={`p-6 rounded-xl shadow-lg border-t-4 transition-all ${promptSent ? 'bg-gray-50 border-gray-300' : 'bg-white border-indigo-500'}`}>
                         <div className="flex justify-between items-center mb-4">
                             <h3 className="text-xl font-bold text-gray-800 flex items-center">
                                 <Send className={`w-5 h-5 mr-2 ${promptSent ? 'text-gray-400' : 'text-indigo-500'}`} />
@@ -405,22 +422,11 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                 disabled={promptSent}
                             />
                             {!promptSent && promptInput.trim().length > 0 && (
-                                <button
-                                    onClick={saveToBank}
-                                    title="Save to Bank"
-                                    className="px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg border border-gray-300"
-                                >
+                                <button onClick={saveToBank} title="Save to Bank" className="px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg border border-gray-300">
                                     <Save className="w-5 h-5" />
                                 </button>
                             )}
-                            <button
-                                onClick={sendPrompt}
-                                disabled={promptSent || !promptInput}
-                                className={`px-6 py-3 font-bold rounded-lg transition flex items-center ${promptSent
-                                    ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-                                    : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
-                                    }`}
-                            >
+                            <button onClick={sendPrompt} disabled={promptSent || !promptInput} className={`px-6 py-3 font-bold rounded-lg transition flex items-center ${promptSent ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
                                 {promptSent ? 'Sent' : 'Broadcast'}
                             </button>
                         </div>
@@ -429,27 +435,20 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                 <p className="text-green-600 flex items-center">
                                     <CheckCircle className="w-4 h-4 mr-1" /> Prompt is live on student devices.
                                 </p>
-                                <button
-                                    onClick={() => { setPromptSent(false); setPromptInput(''); setSubmissionCount(0); setSwapComplete(false); setLiveThoughts([]); }}
-                                    className="text-indigo-600 hover:underline flex items-center"
-                                >
+                                <button onClick={() => { setPromptSent(false); setPromptInput(''); setSubmissionCount(0); setSwapComplete(false); setLiveThoughts([]); setDistribution({}); }} className="text-indigo-600 hover:underline flex items-center">
                                     <RefreshCw className="w-3 h-3 mr-1" /> New Prompt
                                 </button>
                             </div>
                         )}
                     </div>
 
-                    <div className={`p-6 rounded-xl shadow-lg border-t-4 transition duration-300 ${submissionCount > 0 && !swapComplete
-                        ? 'bg-white border-green-500 opacity-100'
-                        : 'bg-gray-50 border-gray-300 opacity-80'
-                        }`}>
+                    <div className={`p-6 rounded-xl shadow-lg border-t-4 transition duration-300 ${submissionCount > 0 && !swapComplete ? 'bg-white border-green-500 opacity-100' : 'bg-gray-50 border-gray-300 opacity-80'}`}>
                         <div className="flex justify-between items-start mb-4">
                             <h3 className="text-xl font-bold text-gray-800 flex items-center">
                                 <Shuffle className="w-5 h-5 mr-2 text-green-600" />
                                 Step 2: The Swap
                             </h3>
 
-                            {/* Max Swap Configuration */}
                             <div className="flex items-center space-x-2 text-sm bg-gray-100 p-2 rounded-lg">
                                 <Settings className="w-4 h-4 text-gray-500" />
                                 <span className="text-gray-600">Max Requests:</span>
@@ -467,20 +466,45 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         <p className="text-gray-600 mb-6">
                             Once enough students have submitted their thoughts, initiate the swap.
                         </p>
-                        <button
-                            onClick={triggerSwap}
-                            disabled={submissionCount < 2 || swapComplete}
-                            className={`w-full py-4 text-white font-bold rounded-xl text-lg shadow-md transition flex items-center justify-center
-                                ${submissionCount >= 2 && !swapComplete
-                                    ? 'bg-green-600 hover:bg-green-700 transform hover:scale-[1.02]'
-                                    : 'bg-gray-300 cursor-not-allowed'
-                                }
-                            `}
-                        >
+                        <button onClick={triggerSwap} disabled={submissionCount < 2 || swapComplete} className={`w-full py-4 text-white font-bold rounded-xl text-lg shadow-md transition flex items-center justify-center ${submissionCount >= 2 && !swapComplete ? 'bg-green-600 hover:bg-green-700 transform hover:scale-[1.02]' : 'bg-gray-300 cursor-not-allowed'}`}>
                             <Shuffle className="w-6 h-6 mr-2" />
                             {swapComplete ? 'Swap Completed' : `Swap Thoughts (${submissionCount})`}
                         </button>
                     </div>
+
+                    {/* Distribution Graph Visualization */}
+                    {Object.keys(distribution).length > 0 && (
+                        <div className="bg-white rounded-xl shadow-lg border-t-4 border-purple-500 p-6">
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-xl font-bold text-gray-800 flex items-center">
+                                    <Shuffle className="w-5 h-5 mr-2 text-purple-600" />
+                                    Distribution Graph
+                                </h3>
+                            </div>
+                            <div className="bg-gray-50 p-4 rounded-lg overflow-x-auto">
+                                <table className="w-full text-sm text-left">
+                                    <thead className="text-xs text-gray-500 uppercase bg-gray-100 border-b">
+                                        <tr>
+                                            <th className="px-4 py-2">Author</th>
+                                            <th className="px-4 py-2 text-center"></th>
+                                            <th className="px-4 py-2">Recipient</th>
+                                            <th className="px-4 py-2">Content Preview</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {Object.entries(distribution).map(([socketId, data]) => (
+                                            <tr key={socketId} className="border-b border-gray-100 hover:bg-white transition">
+                                                <td className="px-4 py-3 font-medium text-gray-700">{data.originalAuthorName}</td>
+                                                <td className="px-4 py-3 text-center text-gray-400"><ArrowRight className="w-4 h-4 mx-auto" /></td>
+                                                <td className="px-4 py-3 font-medium text-indigo-600">{data.studentName}</td>
+                                                <td className="px-4 py-3 text-gray-500 italic truncate max-w-xs">{data.thoughtContent}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
 
                     {/* LIVE THOUGHTS MODERATION */}
                     {promptSent && (
@@ -502,11 +526,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                                 <p className="text-gray-800 text-sm">{thought.content}</p>
                                                 <p className="text-xs text-gray-400 mt-1">{thought.authorName}</p>
                                             </div>
-                                            <button
-                                                onClick={() => deleteThought(thought.id)}
-                                                className="text-red-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition"
-                                                title="Delete Thought"
-                                            >
+                                            <button onClick={() => deleteThought(thought.id)} className="text-red-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition" title="Delete Thought">
                                                 <Trash2 className="w-4 h-4" />
                                             </button>
                                         </div>

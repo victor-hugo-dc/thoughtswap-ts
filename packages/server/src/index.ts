@@ -44,13 +44,13 @@ function generateRoomCode(): string {
 }
 
 function shuffleThoughts(
-    thoughts: { content: string, authorId: string }[],
+    thoughts: { content: string, authorId: string, authorName?: string }[],
     recipientIds: string[]
-): Record<string, string> {
+): Record<string, any> {
     if (thoughts.length === 0) return {};
 
     let pool = [...thoughts];
-    const assignments: Record<string, string> = {};
+    const assignments: Record<string, any> = {};
 
     // Fill pool
     while (pool.length < recipientIds.length) {
@@ -73,12 +73,20 @@ function shuffleThoughts(
         const recipient = recipientIds[i];
         const thought = pool[i];
         if (recipient && thought) {
-            assignments[recipient] = thought.content;
+            assignments[recipient] = {
+                content: thought.content,
+                authorId: thought.authorId,
+                originalAuthorName: thought.authorName
+            };
         }
     }
 
     return assignments;
 }
+
+// Global variable to store current assignments in memory for the facilitator view (for MVP)
+// structure: { [joinCode]: { [studentSocketId]: { studentName, thoughtContent, originalAuthorName } } }
+const roomAssignments: Record<string, Record<string, any>> = {};
 
 // Broadcast Roster
 async function broadcastParticipantList(joinCode: string, activePromptUseId: string | null) {
@@ -90,28 +98,21 @@ async function broadcastParticipantList(joinCode: string, activePromptUseId: str
         : [];
 
     const participantList = students.map(s => {
-        // Check if this student has a submission in the list
-        // Note: In a real scalable app we might map by ID, but loop is fine for small classes
-        const hasSubmitted = submissions.some(sub => sub.authorId === s.data.userId); // s.data.userId set on connection? No, we used closures. 
-        // We need to map socket to user ID. Let's fix that in connection.
-        
         return {
             socketId: s.id,
             name: s.handshake.auth.name || "Anonymous",
-            hasSubmitted: false // We will rely on client state or improve this mapping later. 
-            // For now, let's trust the 'submissions.length' for the count, but individual status is harder without mapping.
-            // Actually, let's fix the mapping in the connection handler to store userId on the socket.
+            hasSubmitted: false
         };
     });
-    
-    // Reworking participant list logic to be accurate:
-    // We need to know WHICH specific students submitted.
-    // Let's improve the socket object to hold the userId.
-    
+
     const teacherSockets = sockets.filter(s => s.handshake.auth.role === 'TEACHER');
     teacherSockets.forEach(t => {
-        // Simplified for now, just sending count is robust. Individual status needs userId on socket.
         t.emit('PARTICIPANTS_UPDATE', { participants: participantList, submissionCount: submissions.length });
+
+        // Also send distribution if it exists
+        if (roomAssignments[joinCode]) {
+            t.emit('DISTRIBUTION_UPDATE', roomAssignments[joinCode]);
+        }
     });
 }
 
@@ -127,7 +128,7 @@ async function broadcastThoughtsList(joinCode: string, promptUseId: string) {
         id: t.id,
         content: t.content,
         authorName: t.author.name,
-        authorId: t.authorId // sending this to help with deletion logic if needed
+        authorId: t.authorId
     }));
 
     const teacherSockets = (await io.in(joinCode).fetchSockets()).filter(s => s.handshake.auth.role === 'TEACHER');
@@ -139,14 +140,12 @@ async function broadcastThoughtsList(joinCode: string, promptUseId: string) {
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
     cors: {
-        origin: `${FRONTEND_URL}`, 
+        origin: `${FRONTEND_URL}`,
         methods: ["GET", "POST"]
     }
 });
 
 io.on('connection', (socket: Socket) => {
-    // console.log('User connected:', socket.id);
-
     const { email, name, role } = socket.handshake.auth;
 
     // --- 1. Initiate User Loading immediately ---
@@ -182,13 +181,37 @@ io.on('connection', (socket: Socket) => {
             socket.disconnect();
         } else {
             // Attach userId to socket for easier lookup later
-            socket.data.userId = user.id; 
+            socket.data.userId = user.id;
+            socket.data.userName = user.name;
+
+            // Send consent status to client on connect
+            socket.emit('CONSENT_STATUS', {
+                consentGiven: user.consentGiven,
+                consentDate: user.consentDate
+            });
+
             logEvent('USER_CONNECT', user.id, { socketId: socket.id, role });
         }
     });
 
+    // --- CONSENT HANDLING ---
+    socket.on('UPDATE_CONSENT', async ({ consentGiven }) => {
+        const user = await userPromise;
+        if (!user) return;
+
+        await prisma.user.update({
+            where: { id: user.id },
+            data: {
+                consentGiven,
+                consentDate: new Date()
+            }
+        });
+
+        logEvent('UPDATE_CONSENT', user.id, { consentGiven });
+        socket.emit('CONSENT_STATUS', { consentGiven, consentDate: new Date() });
+    });
+
     // --- PROMPT BANK CRUD ---
-    
     socket.on('GET_SAVED_PROMPTS', async () => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
@@ -199,7 +222,7 @@ io.on('connection', (socket: Socket) => {
     socket.on('SAVE_PROMPT', async ({ content }) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
-        
+
         await prisma.savedPrompt.create({
             data: { content, teacherId: user.id }
         });
@@ -213,7 +236,6 @@ io.on('connection', (socket: Socket) => {
         if (!user || role !== 'TEACHER') return;
 
         try {
-            // Ensure ownership
             const prompt = await prisma.savedPrompt.findUnique({ where: { id } });
             if (prompt && prompt.teacherId === user.id) {
                 await prisma.savedPrompt.delete({ where: { id } });
@@ -225,7 +247,8 @@ io.on('connection', (socket: Socket) => {
         }
     });
 
-    // CLASS MANAGEMENT
+    // --- CLASS MANAGEMENT ---
+
     socket.on('TEACHER_START_CLASS', async () => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
@@ -246,20 +269,23 @@ io.on('connection', (socket: Socket) => {
         });
 
         const session = await prisma.session.create({
-            data: { 
-                courseId: course.id, 
+            data: {
+                courseId: course.id,
                 status: 'ACTIVE',
                 maxSwapRequests: 1 // Default
             }
         });
 
+        // Initialize assignments for this room
+        roomAssignments[joinCode] = {};
+
         socket.join(course.joinCode);
-        socket.emit('CLASS_STARTED', { 
-            joinCode: course.joinCode, 
+        socket.emit('CLASS_STARTED', {
+            joinCode: course.joinCode,
             sessionId: session.id,
-            maxSwapRequests: session.maxSwapRequests 
+            maxSwapRequests: session.maxSwapRequests
         });
-        
+
         broadcastParticipantList(course.joinCode, null);
         logEvent('START_CLASS', user.id, { joinCode, sessionId: session.id });
     });
@@ -277,7 +303,6 @@ io.on('connection', (socket: Socket) => {
                 where: { id: session.id },
                 data: { maxSwapRequests: parseInt(maxSwapRequests) || 1 }
             });
-            // Ack to teacher if needed, or just silent update
             logEvent('UPDATE_SETTINGS', user.id, { joinCode, maxSwapRequests });
         }
     });
@@ -300,10 +325,10 @@ io.on('connection', (socket: Socket) => {
         }
 
         socket.join(joinCode);
-        socket.emit('CLASS_STARTED', { 
-            joinCode: course.joinCode, 
+        socket.emit('CLASS_STARTED', {
+            joinCode: course.joinCode,
             sessionId: session.id,
-            maxSwapRequests: session.maxSwapRequests 
+            maxSwapRequests: session.maxSwapRequests
         });
 
         // Restore state
@@ -362,7 +387,7 @@ io.on('connection', (socket: Socket) => {
             where: { sessionId: session.id },
             orderBy: { id: 'desc' }
         });
-        
+
         if (activePrompt) {
             // Check if student already submitted
             const existingThought = await prisma.thought.findFirst({
@@ -370,16 +395,22 @@ io.on('connection', (socket: Socket) => {
             });
 
             if (existingThought) {
-                // If they submitted, did they get a swap yet?
-                // Logic for restoring swap state would go here if we persisted assignments in DB.
-                // For MVP, if they submitted, we tell them "Submitted".
-                // If the session is in SWAPPING state (not implemented fully in DB yet), we might have issues.
-                // ideally, we send them back to SUBMITTED state.
-                socket.emit('RESTORE_STATE', { 
-                    status: 'SUBMITTED', 
-                    prompt: activePrompt.content, 
-                    promptUseId: activePrompt.id 
-                });
+                // Check if they were already part of a distribution
+                if (roomAssignments[normalizedCode] && roomAssignments[normalizedCode][socket.id]) {
+                    const assignment = roomAssignments[normalizedCode][socket.id];
+                    socket.emit('RECEIVE_SWAP', { content: assignment.content });
+                    socket.emit('RESTORE_STATE', {
+                        status: 'DISCUSSING',
+                        prompt: activePrompt.content,
+                        promptUseId: activePrompt.id
+                    });
+                } else {
+                    socket.emit('RESTORE_STATE', {
+                        status: 'SUBMITTED',
+                        prompt: activePrompt.content,
+                        promptUseId: activePrompt.id
+                    });
+                }
             } else {
                 socket.emit('NEW_PROMPT', { content: activePrompt.content, promptUseId: activePrompt.id });
             }
@@ -403,12 +434,15 @@ io.on('connection', (socket: Socket) => {
             data: { content, sessionId: session.id }
         });
 
+        // Reset assignments for new prompt
+        roomAssignments[joinCode] = {};
+
         io.to(joinCode).emit('NEW_PROMPT', { content, promptUseId: promptUse.id });
         broadcastParticipantList(joinCode, promptUse.id);
-        
+
         // Clear teacher's thought view for new prompt
-        socket.emit('THOUGHTS_UPDATE', []); 
-        
+        socket.emit('THOUGHTS_UPDATE', []);
+
         logEvent('SEND_PROMPT', user.id, { joinCode, promptUseId: promptUse.id, content });
     });
 
@@ -417,20 +451,20 @@ io.on('connection', (socket: Socket) => {
         if (!user) return;
 
         const { joinCode, content, promptUseId } = data;
-        
+
         if (promptUseId) {
             // Upsert to prevent duplicates if network is flakey
-            const thought = await prisma.thought.create({
+            await prisma.thought.create({
                 data: {
                     content,
                     authorId: user.id,
                     promptUseId: promptUseId
                 }
             });
-            
+
             broadcastParticipantList(joinCode, promptUseId);
             broadcastThoughtsList(joinCode, promptUseId);
-            
+
             logEvent('SUBMIT_THOUGHT', user.id, { joinCode, promptUseId });
         }
     });
@@ -447,17 +481,17 @@ io.on('connection', (socket: Socket) => {
                 const authorSocket = sockets.find(s => s.data.userId === thought.authorId);
 
                 await prisma.thought.delete({ where: { id: thoughtId } });
-                
+
                 broadcastThoughtsList(joinCode, thought.promptUseId);
                 broadcastParticipantList(joinCode, thought.promptUseId);
-                
+
                 if (authorSocket) {
                     authorSocket.emit('THOUGHT_DELETED', { message: "Your response was removed by the facilitator. Please submit a new one." });
                 }
 
                 logEvent('DELETE_THOUGHT', user.id, { thoughtId, content: thought.content });
             }
-        } catch(e) {
+        } catch (e) {
             console.error("Delete failed", e);
         }
     });
@@ -465,7 +499,7 @@ io.on('connection', (socket: Socket) => {
     socket.on('TRIGGER_SWAP', async ({ joinCode }) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
-        
+
         const course = await prisma.course.findUnique({ where: { joinCode } });
         if (!course) return;
 
@@ -481,9 +515,10 @@ io.on('connection', (socket: Socket) => {
             return;
         }
 
+        // Get thoughts with Author Names
         const thoughts = await prisma.thought.findMany({
             where: { promptUseId: promptUse.id },
-            select: { content: true, authorId: true }
+            include: { author: true }
         });
 
         const sockets = await io.in(joinCode).fetchSockets();
@@ -494,14 +529,33 @@ io.on('connection', (socket: Socket) => {
             return;
         }
 
-        const recipientIds = studentSockets.map(s => s.id);
-        const assignments = shuffleThoughts(thoughts, recipientIds);
+        const thoughtsForShuffle = thoughts.map(t => ({
+            content: t.content,
+            authorId: t.authorId,
+            authorName: t.author.name
+        }));
 
+        const recipientIds = studentSockets.map(s => s.id);
+        const assignments = shuffleThoughts(thoughtsForShuffle, recipientIds);
+
+        // Store assignments in memory for visualization
         studentSockets.forEach(s => {
-            const assignedContent = assignments[s.id];
-            if (assignedContent) {
-                io.to(s.id).emit('RECEIVE_SWAP', { content: assignedContent });
+            const assignedData = assignments[s.id];
+            if (assignedData) {
+                if (!roomAssignments[joinCode]) roomAssignments[joinCode] = {};
+                roomAssignments[joinCode][s.id] = {
+                    studentName: s.handshake.auth.name || "Anonymous",
+                    thoughtContent: assignedData.content,
+                    originalAuthorName: assignedData.originalAuthorName
+                };
+                io.to(s.id).emit('RECEIVE_SWAP', { content: assignedData.content });
             }
+        });
+
+        // Broadcast updated distribution to teacher
+        const teacherSockets = sockets.filter(s => s.handshake.auth.role === 'TEACHER');
+        teacherSockets.forEach(t => {
+            t.emit('DISTRIBUTION_UPDATE', roomAssignments[joinCode]);
         });
 
         socket.emit('SWAP_COMPLETED', { count: Object.keys(assignments).length });
@@ -529,23 +583,39 @@ io.on('connection', (socket: Socket) => {
             return;
         }
 
-        // Find available thoughts (not own, optionally not the one they just had)
+        // Find available thoughts
         const allThoughts = await prisma.thought.findMany({
-            where: { 
+            where: {
                 promptUseId: promptUse.id,
-                authorId: { not: user.id } 
-            }
+                authorId: { not: user.id }
+            },
+            include: { author: true }
         });
 
         const available = allThoughts.filter(t => t.content !== currentThoughtContent);
 
         if (available.length > 0) {
             const randomThought = available[Math.floor(Math.random() * available.length)];
-            
-            // Log the request
+
             await prisma.swapRequest.create({
                 data: { studentId: user.id, sessionId: session.id }
             });
+
+            // Update Assignment Tracking
+            if (roomAssignments[joinCode] && roomAssignments[joinCode][socket.id]) {
+                roomAssignments[joinCode][socket.id] = {
+                    studentName: socket.handshake.auth.name || "Anonymous",
+                    thoughtContent: randomThought!.content,
+                    originalAuthorName: randomThought!.author.name
+                };
+
+                // Notify Teacher of update
+                const sockets = await io.in(joinCode).fetchSockets();
+                const teacherSockets = sockets.filter(s => s.handshake.auth.role === 'TEACHER');
+                teacherSockets.forEach(t => {
+                    t.emit('DISTRIBUTION_UPDATE', roomAssignments[joinCode]);
+                });
+            }
 
             socket.emit('RECEIVE_SWAP', { content: randomThought!.content });
             logEvent('REQUEST_RESWAP', user.id, { joinCode });
@@ -565,11 +635,19 @@ io.on('connection', (socket: Socket) => {
                 data: { status: 'COMPLETED' }
             });
         }
-        io.to(joinCode).emit('SESSION_ENDED');
+
+        // Dummy Survey Link
+        const surveyLink = "https://jmu.qualtrics.com/jfe/form/SV_dummy_survey_id";
+
+        io.to(joinCode).emit('SESSION_ENDED', { surveyLink });
         const sockets = await io.in(joinCode).fetchSockets();
         sockets.forEach(s => {
             s.leave(joinCode);
         });
+
+        // Clear assignments
+        if (roomAssignments[joinCode]) delete roomAssignments[joinCode];
+
         logEvent('END_SESSION', user.id, { joinCode });
     });
 

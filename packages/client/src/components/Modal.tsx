@@ -13,6 +13,7 @@ interface ModalProps {
     onConfirm?: () => void;
     confirmText?: string;
     cancelText?: string;
+    isDestructive?: boolean;
 }
 
 export default function Modal({
@@ -24,7 +25,8 @@ export default function Modal({
     type = 'info',
     onConfirm,
     confirmText = 'Confirm',
-    cancelText = 'Cancel'
+    cancelText = 'Cancel',
+    isDestructive = false
 }: ModalProps) {
     if (!isOpen) return null;
 
@@ -52,7 +54,7 @@ export default function Modal({
                 </div>
 
                 <div className="p-6">
-                    {message && <p className="text-gray-600">{message}</p>}
+                    {message && <p className="text-gray-600 mb-4">{message}</p>}
                     {children}
                 </div>
 
@@ -66,8 +68,13 @@ export default function Modal({
                                 {cancelText}
                             </button>
                             <button
-                                onClick={() => { onConfirm?.(); onClose(); }}
-                                className="px-4 py-2 text-white font-semibold rounded-lg shadow-md transition bg-indigo-600 hover:bg-indigo-700"
+                                onClick={() => {
+                                    onConfirm?.();
+                                    // Removed onClose() here to prevent double-firing. 
+                                    // The parent component should handle state updates.
+                                }}
+                                className={`px-4 py-2 text-white font-semibold rounded-lg shadow-md transition ${isDestructive ? 'bg-red-500 hover:bg-red-600' : 'bg-indigo-600 hover:bg-indigo-700'
+                                    }`}
                             >
                                 {confirmText}
                             </button>

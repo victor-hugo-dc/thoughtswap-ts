@@ -16,6 +16,9 @@ model User {
   accessToken  String
   refreshToken String?
   
+  consentGiven Boolean  @default(false)
+  consentDate  DateTime?
+
   thoughts     Thought[] 
   savedPrompts SavedPrompt[] // Relation to saved prompts
   swapRequests SwapRequest[]
