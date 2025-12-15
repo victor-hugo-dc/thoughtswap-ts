@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { socket } from './socket';
 import StudentView from './components/StudentView';
 import TeacherView from './components/TeacherView';
+import Modal from './components/Modal';
 import { LogOut, Users, Zap, Play, GraduationCap } from 'lucide-react';
 
 type UserRole = 'STUDENT' | 'TEACHER' | null;
@@ -33,6 +34,7 @@ function App() {
   });
 
   const [joinCode, setJoinCode] = useState('');
+  const [authErrorModal, setAuthErrorModal] = useState(false);
 
   // TODO: Change the following to the correct Canvas Auth URL
   const CANVAS_AUTH_URL = 'http://localhost:8000/accounts/canvas/login/';
@@ -73,7 +75,7 @@ function App() {
 
     // 2. Global Socket Listener for Session Invalidation
     const handleAuthError = () => {
-      alert("Your session has expired or is invalid. Please log in again.");
+      setAuthErrorModal(true);
       updateAuth({ isLoggedIn: false, name: null, email: null, role: null });
       socket.disconnect();
     };
@@ -109,6 +111,14 @@ function App() {
   if (!authState.isLoggedIn) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gradient-to-b from-gray-50 to-indigo-50">
+        <Modal
+          isOpen={authErrorModal}
+          onClose={() => setAuthErrorModal(false)}
+          title="Session Expired"
+          message="Your session has expired or is invalid. Please log in again."
+          type="error"
+        />
+
         <div className="bg-white p-10 rounded-3xl shadow-2xl w-full max-w-2xl border border-gray-100">
           <div className="text-center mb-10">
             <h1 className="text-5xl font-extrabold text-indigo-700 mb-4 flex items-center justify-center">

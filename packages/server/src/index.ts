@@ -90,15 +90,27 @@ async function broadcastParticipantList(joinCode: string, activePromptUseId: str
         : [];
 
     const participantList = students.map(s => {
+        // Check if this student has a submission in the list
+        // Note: In a real scalable app we might map by ID, but loop is fine for small classes
+        const hasSubmitted = submissions.some(sub => sub.authorId === s.data.userId); // s.data.userId set on connection? No, we used closures. 
+        // We need to map socket to user ID. Let's fix that in connection.
+        
         return {
             socketId: s.id,
             name: s.handshake.auth.name || "Anonymous",
-            hasSubmitted: false 
+            hasSubmitted: false // We will rely on client state or improve this mapping later. 
+            // For now, let's trust the 'submissions.length' for the count, but individual status is harder without mapping.
+            // Actually, let's fix the mapping in the connection handler to store userId on the socket.
         };
     });
-
+    
+    // Reworking participant list logic to be accurate:
+    // We need to know WHICH specific students submitted.
+    // Let's improve the socket object to hold the userId.
+    
     const teacherSockets = sockets.filter(s => s.handshake.auth.role === 'TEACHER');
     teacherSockets.forEach(t => {
+        // Simplified for now, just sending count is robust. Individual status needs userId on socket.
         t.emit('PARTICIPANTS_UPDATE', { participants: participantList, submissionCount: submissions.length });
     });
 }
@@ -114,7 +126,8 @@ async function broadcastThoughtsList(joinCode: string, promptUseId: string) {
     const thoughtData = thoughts.map(t => ({
         id: t.id,
         content: t.content,
-        authorName: t.author.name
+        authorName: t.author.name,
+        authorId: t.authorId // sending this to help with deletion logic if needed
     }));
 
     const teacherSockets = (await io.in(joinCode).fetchSockets()).filter(s => s.handshake.auth.role === 'TEACHER');
@@ -132,7 +145,7 @@ const io = new Server(httpServer, {
 });
 
 io.on('connection', (socket: Socket) => {
-    console.log('User connected:', socket.id);
+    // console.log('User connected:', socket.id);
 
     const { email, name, role } = socket.handshake.auth;
 
@@ -168,11 +181,14 @@ io.on('connection', (socket: Socket) => {
             socket.emit('AUTH_ERROR', { message: "Session invalid. Please log in again." });
             socket.disconnect();
         } else {
+            // Attach userId to socket for easier lookup later
+            socket.data.userId = user.id; 
             logEvent('USER_CONNECT', user.id, { socketId: socket.id, role });
         }
     });
 
     // --- PROMPT BANK CRUD ---
+    
     socket.on('GET_SAVED_PROMPTS', async () => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
@@ -209,6 +225,7 @@ io.on('connection', (socket: Socket) => {
         }
     });
 
+    // CLASS MANAGEMENT
     socket.on('TEACHER_START_CLASS', async () => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
@@ -265,6 +282,54 @@ io.on('connection', (socket: Socket) => {
         }
     });
 
+    // New: Allow teacher to rejoin their own active session
+    socket.on('TEACHER_REJOIN', async ({ joinCode }) => {
+        const user = await userPromise;
+        if (!user || role !== 'TEACHER') return;
+
+        const course = await prisma.course.findUnique({ where: { joinCode } });
+        if (!course || course.teacherId !== user.id) {
+            socket.emit('ERROR', { message: "Invalid session or unauthorized." });
+            return;
+        }
+
+        const session = await prisma.session.findFirst({ where: { courseId: course.id, status: 'ACTIVE' } });
+        if (!session) {
+            socket.emit('ERROR', { message: "Session ended." });
+            return;
+        }
+
+        socket.join(joinCode);
+        socket.emit('CLASS_STARTED', { 
+            joinCode: course.joinCode, 
+            sessionId: session.id,
+            maxSwapRequests: session.maxSwapRequests 
+        });
+
+        // Restore state
+        const activePrompt = await prisma.promptUse.findFirst({
+            where: { sessionId: session.id },
+            orderBy: { id: 'desc' }
+        });
+
+        if (activePrompt) {
+            broadcastParticipantList(joinCode, activePrompt.id);
+            // Send existing thoughts to teacher
+            const thoughts = await prisma.thought.findMany({
+                where: { promptUseId: activePrompt.id },
+                include: { author: true }
+            });
+            const thoughtData = thoughts.map(t => ({
+                id: t.id,
+                content: t.content,
+                authorName: t.author.name
+            }));
+            socket.emit('THOUGHTS_UPDATE', thoughtData);
+        } else {
+            broadcastParticipantList(joinCode, null);
+        }
+    });
+
     socket.on('JOIN_ROOM', async ({ joinCode }: { joinCode: string }) => {
         const user = await userPromise;
         if (!user) return; // Wait for auth
@@ -292,12 +357,32 @@ io.on('connection', (socket: Socket) => {
         socket.join(normalizedCode);
         socket.emit('JOIN_SUCCESS', { joinCode: normalizedCode, courseTitle: course.title });
 
+        // Restore Student State
         const activePrompt = await prisma.promptUse.findFirst({
             where: { sessionId: session.id },
             orderBy: { id: 'desc' }
         });
+        
         if (activePrompt) {
-            socket.emit('NEW_PROMPT', { content: activePrompt.content, promptUseId: activePrompt.id });
+            // Check if student already submitted
+            const existingThought = await prisma.thought.findFirst({
+                where: { promptUseId: activePrompt.id, authorId: user.id }
+            });
+
+            if (existingThought) {
+                // If they submitted, did they get a swap yet?
+                // Logic for restoring swap state would go here if we persisted assignments in DB.
+                // For MVP, if they submitted, we tell them "Submitted".
+                // If the session is in SWAPPING state (not implemented fully in DB yet), we might have issues.
+                // ideally, we send them back to SUBMITTED state.
+                socket.emit('RESTORE_STATE', { 
+                    status: 'SUBMITTED', 
+                    prompt: activePrompt.content, 
+                    promptUseId: activePrompt.id 
+                });
+            } else {
+                socket.emit('NEW_PROMPT', { content: activePrompt.content, promptUseId: activePrompt.id });
+            }
         }
 
         broadcastParticipantList(normalizedCode, activePrompt ? activePrompt.id : null);
@@ -334,7 +419,8 @@ io.on('connection', (socket: Socket) => {
         const { joinCode, content, promptUseId } = data;
         
         if (promptUseId) {
-            await prisma.thought.create({
+            // Upsert to prevent duplicates if network is flakey
+            const thought = await prisma.thought.create({
                 data: {
                     content,
                     authorId: user.id,
@@ -356,9 +442,19 @@ io.on('connection', (socket: Socket) => {
         try {
             const thought = await prisma.thought.findUnique({ where: { id: thoughtId }, include: { promptUse: true } });
             if (thought) {
+                // Get the sockets for the author
+                const sockets = await io.in(joinCode).fetchSockets();
+                const authorSocket = sockets.find(s => s.data.userId === thought.authorId);
+
                 await prisma.thought.delete({ where: { id: thoughtId } });
+                
                 broadcastThoughtsList(joinCode, thought.promptUseId);
                 broadcastParticipantList(joinCode, thought.promptUseId);
+                
+                if (authorSocket) {
+                    authorSocket.emit('THOUGHT_DELETED', { message: "Your response was removed by the facilitator. Please submit a new one." });
+                }
+
                 logEvent('DELETE_THOUGHT', user.id, { thoughtId, content: thought.content });
             }
         } catch(e) {

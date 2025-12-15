@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Loader2, Users, MessageSquare, CheckCircle, RotateCcw, AlertCircle, HelpCircle, RefreshCw } from 'lucide-react';
+import { Loader2, Users, MessageSquare, CheckCircle, RotateCcw, AlertCircle, HelpCircle, RefreshCw, Bell } from 'lucide-react';
+import Modal from './Modal';
+import type { ModalType } from './Modal';
 
 interface StudentViewProps {
     joinCode: string;
@@ -13,18 +15,49 @@ type Status = 'IDLE' | 'JOINED' | 'ANSWERING' | 'SUBMITTED' | 'DISCUSSING';
 export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps) {
     const [status, setStatus] = useState<Status>('IDLE');
     const [inputCode, setInputCode] = useState(joinCode);
-    const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
     const [prompt, setPrompt] = useState<string>('');
     const [promptUseId, setPromptUseId] = useState<string>('');
     const [swappedThought, setSwappedThought] = useState<string>('');
     const [responseInput, setResponseInput] = useState<string>('');
-    
+
     const [showHelp, setShowHelp] = useState(false);
+    const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+
+    // Modal State
+    const [modal, setModal] = useState<{
+        isOpen: boolean;
+        type: ModalType;
+        title: string;
+        message: string;
+    }>({
+        isOpen: false,
+        type: 'info',
+        title: '',
+        message: ''
+    });
+
+    // 1. Persist Session on Load
+    useEffect(() => {
+        const storedJoinCode = localStorage.getItem('thoughtswap_joinCode');
+        // Only attempt rejoin if we have a code and aren't already connected/joined
+        if (storedJoinCode && status === 'IDLE' && !socket.connected) {
+            setInputCode(storedJoinCode);
+            onJoin(storedJoinCode);
+            // Connect and Rejoin
+            socket.auth = {
+                name: auth.name,
+                role: auth.role,
+                email: auth.email
+            };
+            socket.connect();
+            socket.emit('JOIN_ROOM', { joinCode: storedJoinCode });
+        }
+    }, [auth, status]);
 
     useEffect(() => {
-        // Socket Connection Config
-        if (auth) {
+        // Socket Connection Config if not already done in the re-join block
+        if (auth && !socket.auth) {
             socket.auth = {
                 name: auth.name,
                 role: auth.role,
@@ -32,15 +65,28 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             };
         }
 
-        // Event Listeners
-        socket.on('JOIN_SUCCESS', () => {
+        // --- Event Listeners ---
+
+        socket.on('JOIN_SUCCESS', (data: { joinCode: string }) => {
             setStatus('JOINED');
-            setErrorMsg(null);
+            requestNotificationPermission();
+            // Save to localStorage for persistence
+            localStorage.setItem('thoughtswap_joinCode', data.joinCode);
         });
 
         socket.on('ERROR', (data: { message: string }) => {
-            setErrorMsg(data.message);
-            if (status === 'JOINED') setStatus('IDLE');
+            setModal({ isOpen: true, type: 'error', title: 'Error', message: data.message });
+            if (status === 'JOINED' && data.message.includes('ended')) {
+                setStatus('IDLE');
+                localStorage.removeItem('thoughtswap_joinCode'); // Clear on valid exit
+            }
+        });
+
+        // New Event: Restore State from Server (e.g., if already submitted)
+        socket.on('RESTORE_STATE', (data: { status: Status, prompt: string, promptUseId: string }) => {
+            setPrompt(data.prompt);
+            setPromptUseId(data.promptUseId);
+            setStatus(data.status);
         });
 
         socket.on('NEW_PROMPT', (data: { content: string, promptUseId: string }) => {
@@ -49,36 +95,69 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             setStatus('ANSWERING');
             setResponseInput('');
             setSwappedThought('');
+
+            sendNotification("New Prompt!", "The teacher has sent a new prompt.");
         });
 
         socket.on('RECEIVE_SWAP', (data: { content: string }) => {
             setSwappedThought(data.content);
             setStatus('DISCUSSING');
+            sendNotification("New Thought Received", "You have received a peer's thought to discuss.");
         });
 
-        // NEW: Handle Teacher Ending Session
+        // Handle Deletion by Teacher
+        socket.on('THOUGHT_DELETED', (data: { message: string }) => {
+            setModal({ isOpen: true, type: 'warning', title: 'Response Removed', message: data.message });
+            setStatus('ANSWERING'); // Reset to answering state
+            setResponseInput(''); // Clear input so they write fresh
+        });
+
         socket.on('SESSION_ENDED', () => {
-            alert("The class session has ended.");
+            setModal({ isOpen: true, type: 'info', title: 'Session Ended', message: "The class session has ended." });
             setStatus('IDLE');
             setInputCode('');
             setPrompt('');
             setSwappedThought('');
             setResponseInput('');
+            localStorage.removeItem('thoughtswap_joinCode'); // Clean up
         });
 
         return () => {
             socket.off('JOIN_SUCCESS');
             socket.off('ERROR');
+            socket.off('RESTORE_STATE');
             socket.off('NEW_PROMPT');
             socket.off('RECEIVE_SWAP');
+            socket.off('THOUGHT_DELETED');
             socket.off('SESSION_ENDED');
         };
     }, [status, auth]);
 
+    const requestNotificationPermission = () => {
+        if (!("Notification" in window)) return;
+        Notification.requestPermission().then(permission => {
+            setNotificationsEnabled(permission === 'granted');
+        });
+    };
+
+    const sendNotification = (title: string, body: string) => {
+        if (notificationsEnabled && document.hidden) {
+            new Notification(title, { body, icon: '/vite.svg' });
+        }
+    };
+
     const handleJoinClick = () => {
         if (inputCode.length > 0) {
-            setErrorMsg(null);
-            socket.connect();
+            // Note: We don't set auth here anymore, we assume it's set in useEffect or passed down
+            // But we ensure it's connected
+            if (!socket.connected) {
+                socket.auth = {
+                    name: auth.name,
+                    role: auth.role,
+                    email: auth.email
+                };
+                socket.connect();
+            }
             socket.emit('JOIN_ROOM', { joinCode: inputCode });
             onJoin(inputCode);
         }
@@ -86,12 +165,12 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
 
     const submitResponse = () => {
         if (!responseInput.trim()) return;
-        socket.emit('SUBMIT_THOUGHT', { joinCode, content: responseInput, promptUseId });
+        socket.emit('SUBMIT_THOUGHT', { joinCode: inputCode, content: responseInput, promptUseId }); // Use inputCode which matches state
         setStatus('SUBMITTED');
     };
 
     const requestNewSwap = () => {
-        socket.emit('STUDENT_REQUEST_NEW_THOUGHT', { joinCode, currentThoughtContent: swappedThought });
+        socket.emit('STUDENT_REQUEST_NEW_THOUGHT', { joinCode: inputCode, currentThoughtContent: swappedThought });
     };
 
     const renderHelpModal = () => {
@@ -121,13 +200,6 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         <h3 className="text-2xl font-bold mb-4 text-gray-800">Join a Course</h3>
                         <p className="text-gray-600 mb-6">Enter the 6-character room code from your teacher.</p>
 
-                        {errorMsg && (
-                            <div className="mb-4 p-3 bg-red-100 text-red-700 rounded-lg flex items-center text-sm">
-                                <AlertCircle className="w-4 h-4 mr-2 flex-shrink-0" />
-                                {errorMsg}
-                            </div>
-                        )}
-
                         <div className='space-y-4'>
                             <input
                                 type="text"
@@ -135,9 +207,8 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                                 value={inputCode}
                                 onChange={(e) => {
                                     setInputCode(e.target.value.toUpperCase());
-                                    setErrorMsg(null);
                                 }}
-                                className={`w-full px-4 py-2 border rounded-lg text-center text-xl font-mono tracking-widest uppercase focus:ring-indigo-500 focus:border-indigo-500 ${errorMsg ? 'border-red-500 bg-red-50' : 'border-gray-300'}`}
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg text-center text-xl font-mono tracking-widest uppercase focus:ring-indigo-500 focus:border-indigo-500"
                                 maxLength={6}
                             />
                             <button
@@ -157,6 +228,11 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mb-4" />
                         <h3 className="text-xl font-semibold text-gray-700">Awaiting Prompt...</h3>
                         <p className="text-gray-500">The teacher will send the prompt shortly.</p>
+                        {!notificationsEnabled && (
+                            <button onClick={requestNotificationPermission} className="mt-4 text-xs text-indigo-500 flex items-center hover:underline">
+                                <Bell className="w-3 h-3 mr-1" /> Enable Notifications
+                            </button>
+                        )}
                     </div>
                 );
 
@@ -204,9 +280,9 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         <blockquote className="bg-white p-4 sm:p-6 rounded-lg border-l-8 border-yellow-500 italic text-xl shadow-inner text-gray-800 mb-6">
                             "{swappedThought}"
                         </blockquote>
-                        
+
                         <div className="flex justify-end">
-                            <button 
+                            <button
                                 onClick={requestNewSwap}
                                 className="text-sm text-indigo-600 hover:text-indigo-800 underline flex items-center font-semibold"
                             >
@@ -221,6 +297,13 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
 
     return (
         <div className="flex flex-col items-center justify-start py-8 w-full relative">
+            <Modal
+                isOpen={modal.isOpen}
+                onClose={() => setModal({ ...modal, isOpen: false })}
+                title={modal.title}
+                message={modal.message}
+                type={modal.type}
+            />
             {renderHelpModal()}
             <div className='w-full max-w-4xl flex justify-between items-center mb-8 px-4'>
                 <h2 className="text-3xl font-light text-gray-700">
