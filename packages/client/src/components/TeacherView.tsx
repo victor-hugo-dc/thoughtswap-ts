@@ -312,28 +312,81 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                         </button>
                     </div>
                     <div className="p-4 overflow-y-auto flex-1 space-y-2">
-                        {savedPrompts.length === 0 && <p className="text-gray-400 text-center italic">Bank is empty.</p>}
-                        {savedPrompts.map(p => (
-                            <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group flex justify-between items-center"
-                                onClick={() => loadPrompt(p)}>
-                                <div className="flex-1">
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${p.type === 'MC' ? 'bg-purple-500' : p.type === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'
-                                            }`}>
-                                            {p.type}
-                                        </span>
-                                        <p className="text-gray-800 text-sm font-medium truncate">{p.content}</p>
+                        {/* Show Editor in Modal IF we are in Idle State (isActive = false) 
+                           because there is no other place to create prompts.
+                        */}
+                        {!isActive && (
+                            <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                                <h4 className="text-sm font-bold text-gray-700 mb-2 uppercase">Create New Prompt</h4>
+
+                                {/* Type Selector */}
+                                <div className="flex space-x-2 mb-3">
+                                    <button onClick={() => setPromptType('TEXT')} className={`px-2 py-1 text-xs rounded font-bold ${promptType === 'TEXT' ? 'bg-indigo-500 text-white' : 'bg-gray-200 text-gray-600'}`}>Text</button>
+                                    <button onClick={() => setPromptType('MC')} className={`px-2 py-1 text-xs rounded font-bold ${promptType === 'MC' ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-600'}`}>Multiple Choice</button>
+                                    <button onClick={() => setPromptType('SCALE')} className={`px-2 py-1 text-xs rounded font-bold ${promptType === 'SCALE' ? 'bg-orange-500 text-white' : 'bg-gray-200 text-gray-600'}`}>Scale</button>
+                                </div>
+
+                                <input
+                                    type="text"
+                                    placeholder="Enter prompt content..."
+                                    className="w-full border p-2 rounded mb-2 text-sm"
+                                    value={promptInput}
+                                    onChange={(e) => setPromptInput(e.target.value)}
+                                />
+
+                                {promptType === 'MC' && (
+                                    <div className="space-y-1 mb-2 pl-2 border-l-2 border-purple-200">
+                                        {mcOptions.map((opt, idx) => (
+                                            <div key={idx} className="flex gap-1">
+                                                <input
+                                                    className="flex-1 border p-1 rounded text-xs"
+                                                    placeholder={`Option ${idx + 1}`}
+                                                    value={opt}
+                                                    onChange={(e) => updateMcOption(idx, e.target.value)}
+                                                />
+                                                {mcOptions.length > 2 && <button onClick={() => removeMcOption(idx)} className="text-red-400"><X className="w-3 h-3" /></button>}
+                                            </div>
+                                        ))}
+                                        {mcOptions.length < 6 && (
+                                            <button onClick={addMcOption} className="text-xs text-purple-600 font-bold">+ Add Option</button>
+                                        )}
                                     </div>
-                                    {p.type === 'MC' && <p className="text-xs text-gray-500 pl-1">{p.options?.length} Options</p>}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <span className="text-xs text-indigo-600 hidden group-hover:inline-block font-bold">Load</span>
-                                    <button onClick={(e) => deleteFromBank(p.id, e)} className="p-1 text-red-300 hover:text-red-500 rounded hover:bg-red-50">
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                </div>
+                                )}
+
+                                <button
+                                    onClick={saveToBank}
+                                    className="w-full py-2 bg-indigo-600 text-white text-sm font-bold rounded hover:bg-indigo-700 flex items-center justify-center"
+                                >
+                                    <Save className="w-4 h-4 mr-1" /> Save to Bank
+                                </button>
                             </div>
-                        ))}
+                        )}
+
+                        <div className="space-y-2">
+                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Saved Prompts</h4>
+                            {savedPrompts.length === 0 && <p className="text-gray-400 text-center italic text-sm">Bank is empty.</p>}
+                            {savedPrompts.map(p => (
+                                <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group flex justify-between items-center"
+                                    onClick={() => loadPrompt(p)}>
+                                    <div className="flex-1 overflow-hidden">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${p.type === 'MC' ? 'bg-purple-500' : p.type === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'
+                                                }`}>
+                                                {p.type}
+                                            </span>
+                                            <p className="text-gray-800 text-sm font-medium truncate">{p.content}</p>
+                                        </div>
+                                        {p.type === 'MC' && <p className="text-xs text-gray-500 pl-1">{p.options?.length} Options</p>}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-indigo-600 hidden group-hover:inline-block font-bold">Load</span>
+                                        <button onClick={(e) => deleteFromBank(p.id, e)} className="p-1 text-red-300 hover:text-red-500 rounded hover:bg-red-50">
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -505,9 +558,37 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     </div>
                     <h2 className="text-3xl font-bold text-gray-800 mb-2">Start a New Class</h2>
                     <p className="text-gray-600 mb-8">Create a temporary room for your students.</p>
+
+                    {/* Display Loaded Prompt Feedback */}
+                    {promptInput && (
+                        <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group w-full">
+                            <div className="flex justify-between items-start">
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${promptType === 'MC' ? 'bg-purple-500' : promptType === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'
+                                            }`}>
+                                            {promptType}
+                                        </span>
+                                        <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Staged Prompt</p>
+                                    </div>
+                                    <p className="text-gray-800 font-medium truncate">{promptInput}</p>
+                                    {promptType === 'MC' && <p className="text-xs text-gray-500">{mcOptions.filter(o => o).length} Options</p>}
+                                </div>
+                                <button
+                                    onClick={() => { setPromptInput(''); setPromptType('TEXT'); setMcOptions(['', '']); }}
+                                    className="text-gray-400 hover:text-red-500 transition p-1"
+                                    title="Clear"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     <button onClick={startClass} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105 mb-4">
                         Launch Session
                     </button>
+
                     <button onClick={() => setShowBank(true)} className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center">
                         <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
                     </button>
