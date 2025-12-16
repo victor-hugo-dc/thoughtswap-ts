@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { socket } from '../socket';
-import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, Trash2, HelpCircle, Eye, Settings, ArrowRight } from 'lucide-react';
+import { Users, Send, Shuffle, Power, Copy, CheckCircle, Play, RefreshCw, BookOpen, Save, Trash2, HelpCircle, Eye, Settings, ArrowRight, List, AlignLeft, BarChart2, Plus, X } from 'lucide-react';
 import Modal from './Modal';
 import type { ModalType } from './Modal';
 
@@ -23,6 +23,8 @@ interface Participant {
 interface SavedPrompt {
     id: string;
     content: string;
+    type: 'TEXT' | 'MC' | 'SCALE';
+    options?: string[];
 }
 
 interface Thought {
@@ -40,7 +42,12 @@ interface DistributionItem {
 export default function TeacherView({ auth }: TeacherViewProps) {
     const [isActive, setIsActive] = useState(false);
     const [joinCode, setJoinCode] = useState('');
+
+    // Prompt Composer State
     const [promptInput, setPromptInput] = useState('');
+    const [promptType, setPromptType] = useState<'TEXT' | 'MC' | 'SCALE'>('TEXT');
+    const [mcOptions, setMcOptions] = useState<string[]>(['', '']); // Start with 2 empty options
+
     const [promptSent, setPromptSent] = useState(false);
     const [participants, setParticipants] = useState<Participant[]>([]);
     const [submissionCount, setSubmissionCount] = useState(0);
@@ -61,6 +68,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         message: string;
         children?: React.ReactNode;
         onConfirm?: () => void;
+        isDestructive?: boolean;
     }>({
         isOpen: false,
         type: 'info',
@@ -68,13 +76,10 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         message: ''
     });
 
-    // 1. Persistence Check on Mount
     useEffect(() => {
         const storedJoinCode = localStorage.getItem('thoughtswap_joinCode');
         const storedIsTeacherActive = localStorage.getItem('thoughtswap_teacher_active');
 
-        // Check if we should restore session, disregarding !socket.connected check
-        // because App.tsx might have already connected it.
         if (storedJoinCode && storedIsTeacherActive === 'true' && !isActive) {
             console.log("Restoring teacher session:", storedJoinCode);
             if (!socket.auth) {
@@ -110,7 +115,6 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setIsActive(true);
             setJoinCode(data.joinCode);
             setMaxSwapRequests(data.maxSwapRequests || 1);
-
             localStorage.setItem('thoughtswap_joinCode', data.joinCode);
             localStorage.setItem('thoughtswap_teacher_active', 'true');
         });
@@ -160,38 +164,85 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         };
     }, [auth]);
 
-    const showModal = (type: ModalType, title: string, message: string, onConfirm?: () => void, children?: React.ReactNode) => {
-        setModal({ isOpen: true, type, title, message, onConfirm, children });
+    const showModal = (type: ModalType, title: string, message: string, onConfirm?: () => void, children?: React.ReactNode, isDestructive?: boolean) => {
+        setModal({ isOpen: true, type, title, message, onConfirm, children, isDestructive });
     };
 
     const startClass = () => {
         socket.emit('TEACHER_START_CLASS');
     };
 
+    // --- PROMPT COMPOSER LOGIC ---
+
+    const addMcOption = () => setMcOptions([...mcOptions, '']);
+    const removeMcOption = (idx: number) => {
+        const newOpts = [...mcOptions];
+        newOpts.splice(idx, 1);
+        setMcOptions(newOpts);
+    };
+    const updateMcOption = (idx: number, val: string) => {
+        const newOpts = [...mcOptions];
+        newOpts[idx] = val;
+        setMcOptions(newOpts);
+    };
+
+    const validatePrompt = () => {
+        if (!promptInput.trim()) return false;
+        if (promptType === 'MC') {
+            const validOpts = mcOptions.filter(o => o.trim().length > 0);
+            if (validOpts.length < 2) return false;
+        }
+        return true;
+    };
+
+    const getPromptData = () => {
+        return {
+            content: promptInput,
+            type: promptType,
+            options: promptType === 'MC' ? mcOptions.filter(o => o.trim().length > 0) : undefined
+        };
+    };
+
     const sendPrompt = () => {
-        if (!promptInput.trim()) return;
-        socket.emit('TEACHER_SEND_PROMPT', { joinCode, content: promptInput });
+        if (!validatePrompt()) {
+            showModal('error', 'Invalid Prompt', 'Please enter a prompt text. If using Multiple Choice, provide at least 2 options.');
+            return;
+        }
+        const data = getPromptData();
+        socket.emit('TEACHER_SEND_PROMPT', { joinCode, ...data });
         setPromptSent(true);
         setSwapComplete(false);
-        setDistribution({}); // Reset distribution
+        setDistribution({});
     };
 
     const saveToBank = () => {
-        if (!promptInput.trim()) return;
-        socket.emit('SAVE_PROMPT', { content: promptInput });
+        if (!validatePrompt()) {
+            showModal('error', 'Invalid Prompt', 'Please enter a prompt text. If using Multiple Choice, provide at least 2 options.');
+            return;
+        }
+        const data = getPromptData();
+        socket.emit('SAVE_PROMPT', data);
         showModal('success', 'Saved', 'Prompt saved to your bank!');
     };
+
+    const loadPrompt = (prompt: SavedPrompt) => {
+        setPromptInput(prompt.content);
+        setPromptType(prompt.type);
+        if (prompt.type === 'MC' && prompt.options) {
+            setMcOptions(prompt.options);
+        } else {
+            setMcOptions(['', '']);
+        }
+        setShowBank(false);
+    };
+
+    // --- END COMPOSER LOGIC ---
 
     const deleteFromBank = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
         if (confirm("Delete this prompt?")) {
             socket.emit('DELETE_SAVED_PROMPT', { id });
         }
-    };
-
-    const loadPrompt = (content: string) => {
-        setPromptInput(content);
-        setShowBank(false);
     };
 
     const triggerSwap = () => {
@@ -206,7 +257,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     const deleteThought = (thoughtId: string) => {
         showModal('confirm', 'Delete Thought', 'Are you sure you want to delete this thought? It will be removed from the session.', () => {
             socket.emit('TEACHER_DELETE_THOUGHT', { joinCode, thoughtId });
-        });
+        }, undefined, true);
     };
 
     const endSession = () => {
@@ -221,12 +272,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             setSubmissionCount(0);
             setLiveThoughts([]);
             setDistribution({});
-
-            // Clear persistence
             localStorage.removeItem('thoughtswap_joinCode');
             localStorage.removeItem('thoughtswap_teacher_active');
 
-            // Show Survey Link
             setTimeout(() => {
                 showModal('info', 'Session Ended', '', undefined, (
                     <div className="text-center">
@@ -242,7 +290,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     </div>
                 ));
             }, 500);
-        });
+        }, undefined, true);
     };
 
     const copyCode = () => {
@@ -260,30 +308,24 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                             <BookOpen className="w-5 h-5 mr-2 text-indigo-600" /> Prompt Bank
                         </h3>
                         <button onClick={() => setShowBank(false)} className="text-gray-400 hover:text-gray-600">
-                            <Trash2 className="w-0 h-0" />
-                            Close
+                            <X className="w-5 h-5" />
                         </button>
                     </div>
                     <div className="p-4 overflow-y-auto flex-1 space-y-2">
-                        {!isActive && (
-                            <div className="mb-4 flex gap-2">
-                                <input
-                                    type="text"
-                                    placeholder="Create new prompt..."
-                                    className="flex-1 border p-2 rounded focus:ring-2 focus:ring-indigo-500 outline-none"
-                                    onKeyDown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            socket.emit('SAVE_PROMPT', { content: e.currentTarget.value });
-                                            e.currentTarget.value = '';
-                                        }
-                                    }}
-                                />
-                            </div>
-                        )}
+                        {savedPrompts.length === 0 && <p className="text-gray-400 text-center italic">Bank is empty.</p>}
                         {savedPrompts.map(p => (
                             <div key={p.id} className="p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition group flex justify-between items-center"
-                                onClick={() => loadPrompt(p.content)}>
-                                <p className="text-gray-800 text-sm flex-1">{p.content}</p>
+                                onClick={() => loadPrompt(p)}>
+                                <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${p.type === 'MC' ? 'bg-purple-500' : p.type === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'
+                                            }`}>
+                                            {p.type}
+                                        </span>
+                                        <p className="text-gray-800 text-sm font-medium truncate">{p.content}</p>
+                                    </div>
+                                    {p.type === 'MC' && <p className="text-xs text-gray-500 pl-1">{p.options?.length} Options</p>}
+                                </div>
                                 <div className="flex items-center gap-2">
                                     <span className="text-xs text-indigo-600 hidden group-hover:inline-block font-bold">Load</span>
                                     <button onClick={(e) => deleteFromBank(p.id, e)} className="p-1 text-red-300 hover:text-red-500 rounded hover:bg-red-50">
@@ -298,6 +340,148 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         );
     };
 
+    const renderComposer = () => (
+        <div className={`p-6 rounded-xl shadow-lg border-t-4 transition-all ${promptSent ? 'bg-gray-50 border-gray-300' : 'bg-white border-indigo-500'}`}>
+            <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-gray-800 flex items-center">
+                    <Send className={`w-5 h-5 mr-2 ${promptSent ? 'text-gray-400' : 'text-indigo-500'}`} />
+                    Step 1: Create Prompt
+                </h3>
+                {!promptSent && (
+                    <button onClick={() => setShowBank(true)} className="text-sm text-indigo-600 font-semibold flex items-center hover:underline">
+                        <BookOpen className="w-4 h-4 mr-1" /> Open Bank
+                    </button>
+                )}
+            </div>
+
+            {/* Type Selector */}
+            {!promptSent && (
+                <div className="flex space-x-2 mb-4">
+                    <button
+                        onClick={() => setPromptType('TEXT')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center ${promptType === 'TEXT' ? 'bg-indigo-100 text-indigo-700 ring-2 ring-indigo-500' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                        <AlignLeft className="w-4 h-4 mr-1.5" /> Open Text
+                    </button>
+                    <button
+                        onClick={() => setPromptType('MC')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center ${promptType === 'MC' ? 'bg-purple-100 text-purple-700 ring-2 ring-purple-500' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                        <List className="w-4 h-4 mr-1.5" /> Multiple Choice
+                    </button>
+                    <button
+                        onClick={() => setPromptType('SCALE')}
+                        className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center ${promptType === 'SCALE' ? 'bg-orange-100 text-orange-700 ring-2 ring-orange-500' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                    >
+                        <BarChart2 className="w-4 h-4 mr-1.5" /> 1-5 Scale
+                    </button>
+                </div>
+            )}
+
+            <div className="space-y-3">
+                <input
+                    type="text"
+                    value={promptInput}
+                    onChange={(e) => setPromptInput(e.target.value)}
+                    placeholder="Enter your question here..."
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition disabled:bg-gray-100"
+                    disabled={promptSent}
+                />
+
+                {/* Multiple Choice Options */}
+                {!promptSent && promptType === 'MC' && (
+                    <div className="pl-4 border-l-2 border-purple-200 space-y-2">
+                        <p className="text-xs font-bold text-purple-500 uppercase">Answer Options</p>
+                        {mcOptions.map((opt, idx) => (
+                            <div key={idx} className="flex gap-2 items-center">
+                                <div className="w-6 h-6 rounded-full border-2 border-gray-300 flex items-center justify-center text-xs text-gray-400 font-mono">
+                                    {String.fromCharCode(65 + idx)}
+                                </div>
+                                <input
+                                    type="text"
+                                    value={opt}
+                                    onChange={(e) => updateMcOption(idx, e.target.value)}
+                                    placeholder={`Option ${idx + 1}`}
+                                    className="flex-1 px-3 py-2 border border-gray-200 rounded text-sm focus:outline-none focus:border-purple-400"
+                                />
+                                {mcOptions.length > 2 && (
+                                    <button onClick={() => removeMcOption(idx)} className="text-gray-400 hover:text-red-500">
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                        {mcOptions.length < 6 && (
+                            <button onClick={addMcOption} className="text-xs flex items-center text-purple-600 hover:underline font-medium mt-1">
+                                <Plus className="w-3 h-3 mr-1" /> Add Option
+                            </button>
+                        )}
+                    </div>
+                )}
+
+                {/* Scale Preview */}
+                {!promptSent && promptType === 'SCALE' && (
+                    <div className="pl-4 border-l-2 border-orange-200">
+                        <p className="text-xs font-bold text-orange-500 uppercase mb-2">Student View Preview</p>
+                        <div className="bg-gray-50 p-3 rounded-lg flex justify-between items-center text-sm text-gray-500">
+                            <span>1 (Disagree)</span>
+                            <div className="flex gap-1">
+                                {[1, 2, 3, 4, 5].map(n => (
+                                    <div key={n} className="w-6 h-6 rounded-full border border-gray-300 flex items-center justify-center bg-white">{n}</div>
+                                ))}
+                            </div>
+                            <span>5 (Agree)</span>
+                        </div>
+                    </div>
+                )}
+
+                <div className="flex gap-2 pt-2">
+                    {!promptSent && (
+                        <button
+                            onClick={saveToBank}
+                            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold rounded-lg border border-gray-300 flex items-center"
+                        >
+                            <Save className="w-4 h-4 mr-2" /> Save
+                        </button>
+                    )}
+                    <button
+                        onClick={sendPrompt}
+                        disabled={promptSent || !promptInput}
+                        className={`flex-1 px-6 py-3 font-bold rounded-lg transition flex items-center justify-center ${promptSent
+                            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                            : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'
+                            }`}
+                    >
+                        {promptSent ? 'Sent' : 'Broadcast'}
+                    </button>
+                </div>
+            </div>
+
+            {promptSent && (
+                <div className="mt-4 flex justify-between items-center text-sm border-t pt-3">
+                    <p className="text-green-600 flex items-center">
+                        <CheckCircle className="w-4 h-4 mr-1" /> Prompt is live.
+                    </p>
+                    <button
+                        onClick={() => {
+                            setPromptSent(false);
+                            setPromptInput('');
+                            setSubmissionCount(0);
+                            setSwapComplete(false);
+                            setLiveThoughts([]);
+                            setDistribution({});
+                            setPromptType('TEXT');
+                            setMcOptions(['', '']);
+                        }}
+                        className="text-indigo-600 hover:underline flex items-center"
+                    >
+                        <RefreshCw className="w-3 h-3 mr-1" /> New Prompt
+                    </button>
+                </div>
+            )}
+        </div>
+    );
+
     // --- IDLE STATE ---
     if (!isActive) {
         return (
@@ -310,6 +494,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     message={modal.message}
                     type={modal.type}
                     onConfirm={modal.onConfirm}
+                    isDestructive={modal.isDestructive}
                 >
                     {modal.children}
                 </Modal>
@@ -320,29 +505,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                     </div>
                     <h2 className="text-3xl font-bold text-gray-800 mb-2">Start a New Class</h2>
                     <p className="text-gray-600 mb-8">Create a temporary room for your students.</p>
-
-                    {promptInput && (
-                        <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group">
-                            <div className="flex justify-between items-start">
-                                <div>
-                                    <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider mb-1">Staged Prompt</p>
-                                    <p className="text-gray-800 font-medium">{promptInput}</p>
-                                </div>
-                                <button
-                                    onClick={() => setPromptInput('')}
-                                    className="text-gray-400 hover:text-red-500 transition p-1"
-                                    title="Clear"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
                     <button onClick={startClass} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105 mb-4">
                         Launch Session
                     </button>
-
                     <button onClick={() => setShowBank(true)} className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center">
                         <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
                     </button>
@@ -362,6 +527,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                 message={modal.message}
                 type={modal.type}
                 onConfirm={modal.onConfirm}
+                isDestructive={modal.isDestructive}
             >
                 {modal.children}
             </Modal>
@@ -399,48 +565,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Controls */}
                 <div className="lg:col-span-2 space-y-6">
-                    <div className={`p-6 rounded-xl shadow-lg border-t-4 transition-all ${promptSent ? 'bg-gray-50 border-gray-300' : 'bg-white border-indigo-500'}`}>
-                        <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-xl font-bold text-gray-800 flex items-center">
-                                <Send className={`w-5 h-5 mr-2 ${promptSent ? 'text-gray-400' : 'text-indigo-500'}`} />
-                                Step 1: Send Prompt
-                            </h3>
-                            {!promptSent && (
-                                <button onClick={() => setShowBank(true)} className="text-sm text-indigo-600 font-semibold flex items-center hover:underline">
-                                    <BookOpen className="w-4 h-4 mr-1" /> Open Prompt Bank
-                                </button>
-                            )}
-                        </div>
-
-                        <div className="flex space-x-2">
-                            <input
-                                type="text"
-                                value={promptInput}
-                                onChange={(e) => setPromptInput(e.target.value)}
-                                placeholder="e.g., What is the most important theme in Hamlet?"
-                                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none transition disabled:bg-gray-100"
-                                disabled={promptSent}
-                            />
-                            {!promptSent && promptInput.trim().length > 0 && (
-                                <button onClick={saveToBank} title="Save to Bank" className="px-3 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-lg border border-gray-300">
-                                    <Save className="w-5 h-5" />
-                                </button>
-                            )}
-                            <button onClick={sendPrompt} disabled={promptSent || !promptInput} className={`px-6 py-3 font-bold rounded-lg transition flex items-center ${promptSent ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-md'}`}>
-                                {promptSent ? 'Sent' : 'Broadcast'}
-                            </button>
-                        </div>
-                        {promptSent && (
-                            <div className="mt-4 flex justify-between items-center text-sm">
-                                <p className="text-green-600 flex items-center">
-                                    <CheckCircle className="w-4 h-4 mr-1" /> Prompt is live on student devices.
-                                </p>
-                                <button onClick={() => { setPromptSent(false); setPromptInput(''); setSubmissionCount(0); setSwapComplete(false); setLiveThoughts([]); setDistribution({}); }} className="text-indigo-600 hover:underline flex items-center">
-                                    <RefreshCw className="w-3 h-3 mr-1" /> New Prompt
-                                </button>
-                            </div>
-                        )}
-                    </div>
+                    {renderComposer()}
 
                     <div className={`p-6 rounded-xl shadow-lg border-t-4 transition duration-300 ${submissionCount > 0 && !swapComplete ? 'bg-white border-green-500 opacity-100' : 'bg-gray-50 border-gray-300 opacity-80'}`}>
                         <div className="flex justify-between items-start mb-4">

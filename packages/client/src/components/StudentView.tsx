@@ -16,8 +16,12 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
     const [status, setStatus] = useState<Status>('IDLE');
     const [inputCode, setInputCode] = useState(joinCode);
 
+    // Prompt State
     const [prompt, setPrompt] = useState<string>('');
+    const [promptType, setPromptType] = useState<'TEXT' | 'MC' | 'SCALE'>('TEXT');
+    const [promptOptions, setPromptOptions] = useState<string[]>([]);
     const [promptUseId, setPromptUseId] = useState<string>('');
+
     const [swappedThought, setSwappedThought] = useState<string>('');
     const [responseInput, setResponseInput] = useState<string>('');
 
@@ -38,17 +42,14 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         message: ''
     });
 
-    // 1. Persist Session on Load
     useEffect(() => {
         const storedJoinCode = localStorage.getItem('thoughtswap_joinCode');
 
-        // If we have a stored code and are IDLE, try to rejoin
         if (storedJoinCode && status === 'IDLE') {
             console.log("Restoring session for:", storedJoinCode);
             setInputCode(storedJoinCode);
-            onJoin(storedJoinCode); // Sync up parent state if needed
+            onJoin(storedJoinCode);
 
-            // Ensure socket is configured and connected
             if (!socket.auth) {
                 socket.auth = {
                     name: auth.name,
@@ -59,11 +60,9 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             if (!socket.connected) {
                 socket.connect();
             }
-
-            // Emit join request
             socket.emit('JOIN_ROOM', { joinCode: storedJoinCode });
         }
-    }, [auth, status]); // Run when auth is ready or status is idle
+    }, [auth, status]);
 
     useEffect(() => {
         if (auth && !socket.auth) {
@@ -74,8 +73,6 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
             };
         }
 
-        // --- Event Listeners ---
-
         socket.on('JOIN_SUCCESS', (data: { joinCode: string }) => {
             setStatus('JOINED');
             requestNotificationPermission();
@@ -84,22 +81,25 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
 
         socket.on('ERROR', (data: { message: string }) => {
             setModal({ isOpen: true, type: 'error', title: 'Error', message: data.message });
-            // If we get an error while joined or trying to join, clear persistence if it's a "fatal" error
             if (data.message.includes('ended') || data.message.includes('Invalid')) {
                 setStatus('IDLE');
                 localStorage.removeItem('thoughtswap_joinCode');
             }
         });
 
-        socket.on('RESTORE_STATE', (data: { status: Status, prompt: string, promptUseId: string }) => {
+        socket.on('RESTORE_STATE', (data: any) => {
             setPrompt(data.prompt);
             setPromptUseId(data.promptUseId);
+            setPromptType(data.type || 'TEXT');
+            setPromptOptions(data.options || []);
             setStatus(data.status);
         });
 
-        socket.on('NEW_PROMPT', (data: { content: string, promptUseId: string }) => {
+        socket.on('NEW_PROMPT', (data: any) => {
             setPrompt(data.content);
             setPromptUseId(data.promptUseId);
+            setPromptType(data.type || 'TEXT');
+            setPromptOptions(data.options || []);
             setStatus('ANSWERING');
             setResponseInput('');
             setSwappedThought('');
@@ -197,6 +197,68 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         socket.emit('STUDENT_REQUEST_NEW_THOUGHT', { joinCode: inputCode, currentThoughtContent: swappedThought });
     };
 
+    // --- RENDER HELPERS ---
+
+    const renderInputArea = () => {
+        if (promptType === 'MC') {
+            return (
+                <div className="space-y-3">
+                    {promptOptions.map((opt, idx) => (
+                        <label key={idx} className={`flex items-center p-4 border rounded-lg cursor-pointer transition ${responseInput === opt ? 'border-purple-500 bg-purple-50 ring-1 ring-purple-500' : 'border-gray-200 hover:bg-gray-50'}`}>
+                            <input
+                                type="radio"
+                                name="mc_option"
+                                value={opt}
+                                checked={responseInput === opt}
+                                onChange={(e) => setResponseInput(e.target.value)}
+                                className="w-5 h-5 text-purple-600 border-gray-300 focus:ring-purple-500"
+                            />
+                            <span className="ml-3 text-gray-700 font-medium">{opt}</span>
+                        </label>
+                    ))}
+                </div>
+            );
+        } else if (promptType === 'SCALE') {
+            return (
+                <div className="space-y-6">
+                    <div className="flex justify-between text-sm text-gray-500 font-medium">
+                        <span>Strongly Disagree</span>
+                        <span>Strongly Agree</span>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                        {[1, 2, 3, 4, 5].map((val) => (
+                            <button
+                                key={val}
+                                onClick={() => setResponseInput(val.toString())}
+                                className={`w-12 h-12 rounded-full font-bold text-lg flex items-center justify-center transition shadow-sm ${responseInput === val.toString()
+                                        ? 'bg-orange-500 text-white transform scale-110 shadow-md ring-2 ring-orange-200'
+                                        : 'bg-white border-2 border-gray-200 text-gray-600 hover:border-orange-300'
+                                    }`}
+                            >
+                                {val}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="text-center h-6">
+                        {responseInput && <span className="text-orange-600 font-bold">Selected: {responseInput}</span>}
+                    </div>
+                </div>
+            );
+        } else {
+            // Default TEXT
+            return (
+                <textarea
+                    value={responseInput}
+                    onChange={(e) => setResponseInput(e.target.value)}
+                    placeholder="Write your thought here..."
+                    rows={6}
+                    maxLength={500}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-base"
+                />
+            );
+        }
+    };
+
     const renderHelpModal = () => {
         if (!showHelp) return null;
         return (
@@ -270,16 +332,11 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                         <blockquote className="border-l-4 border-indigo-400 pl-4 py-2 mb-6 italic text-gray-700 text-lg">
                             {prompt}
                         </blockquote>
-                        <textarea
-                            value={responseInput}
-                            onChange={(e) => setResponseInput(e.target.value)}
-                            placeholder="Write your thought here..."
-                            rows={6}
-                            maxLength={500}
-                            className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 resize-none text-base"
-                        />
+
+                        {renderInputArea()}
+
                         <button onClick={submitResponse} disabled={responseInput.trim().length === 0} className="w-full px-4 py-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-lg transition mt-4 shadow-md disabled:opacity-50">
-                            Submit Thought
+                            Submit Response
                         </button>
                     </div>
                 );
@@ -288,7 +345,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                 return (
                     <div className="flex flex-col items-center p-10 bg-indigo-50 rounded-xl shadow-xl w-full max-w-md text-center border-2 border-indigo-400">
                         <CheckCircle className="w-12 h-12 text-indigo-500 mb-4" />
-                        <h3 className="text-2xl font-bold text-gray-800 mb-2">Thought Submitted!</h3>
+                        <h3 className="text-2xl font-bold text-gray-800 mb-2">Submitted!</h3>
                         <p className="text-gray-600">Your response is awaiting the shuffle.</p>
                     </div>
                 );
@@ -300,7 +357,7 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
                             <RotateCcw className="w-8 h-8 mr-3" />
                             <h3 className="text-3xl font-extrabold">Peer Review Time!</h3>
                         </div>
-                        <p className="text-lg text-gray-700 mb-6">Discuss this anonymous peer's thought:</p>
+                        <p className="text-lg text-gray-700 mb-6">Discuss this anonymous peer's response:</p>
                         <blockquote className="bg-white p-4 sm:p-6 rounded-lg border-l-8 border-yellow-500 italic text-xl shadow-inner text-gray-800 mb-6">
                             "{swappedThought}"
                         </blockquote>

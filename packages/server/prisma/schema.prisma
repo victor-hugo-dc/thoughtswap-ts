@@ -29,6 +29,8 @@ model User {
 model SavedPrompt {
   id        String   @id @default(uuid())
   content   String
+  type      String   @default("TEXT") // TEXT, MC, SCALE
+  options   Json?    // Stores options for MC as an array of strings
   teacherId String
   teacher   User     @relation(fields: [teacherId], references: [id])
   createdAt DateTime @default(now())
@@ -70,6 +72,8 @@ model SwapRequest {
 model PromptUse {
   id        String    @id @default(uuid())
   content   String
+  type      String    @default("TEXT") // TEXT, MC, SCALE
+  options   Json?
   sessionId String
   session   Session   @relation(fields: [sessionId], references: [id])
   thoughts  Thought[]
