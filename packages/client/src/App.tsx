@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { socket } from './socket';
 import StudentView from './components/StudentView';
 import TeacherView from './components/TeacherView';
+import AdminView from './components/AdminView';
 import Modal from './components/Modal';
 import OnboardingTour from './components/OnboardingTour';
-import { LogOut, Users, Zap, Play, GraduationCap } from 'lucide-react';
+import { LogOut, Users, Zap, Play, GraduationCap, Shield } from 'lucide-react';
 
-type UserRole = 'STUDENT' | 'TEACHER' | null;
+type UserRole = 'STUDENT' | 'TEACHER' | 'ADMIN' | null;
 
 interface AuthState {
   isLoggedIn: boolean;
@@ -80,6 +81,10 @@ function App() {
     };
 
     const handleConsentStatus = (data: { consentGiven: boolean, consentDate: string | null }) => {
+      // Admins don't need to give consent
+      if (authState.role === 'ADMIN') {
+        return;
+      }
       if (data.consentDate === null) {
         setShowConsentModal(true);
       } else {
@@ -129,7 +134,7 @@ function App() {
     const randomId = Math.floor(Math.random() * 10000);
     updateAuth({
       isLoggedIn: true,
-      name: role === 'TEACHER' ? `Guest Teacher ${randomId}` : `Guest Student ${randomId}`,
+      name: role === 'TEACHER' ? `Guest Teacher ${randomId}` : role === 'ADMIN' ? `Admin User ${randomId}` : `Guest Student ${randomId}`,
       email: `guest_${role?.toLowerCase()}_${randomId}@demo.com`,
       role: role,
       expiry: Date.now() + SESSION_DURATION
@@ -158,6 +163,10 @@ function App() {
       setJoinCode('');
       socket.disconnect();
     }, 500); // 500ms delay to allow network flush
+  };
+
+  const handleExitAdmin = () => {
+    handleLogout();
   };
 
   const handleStudentJoin = (code: string) => {
@@ -220,6 +229,15 @@ function App() {
                 </div>
                 <span>Demo Student</span>
               </button>
+              <button
+                onClick={() => handleDemoLogin('ADMIN')}
+                className="px-6 py-4 bg-white border-2 border-purple-100 text-purple-600 font-bold rounded-xl hover:bg-purple-50 transition flex flex-col items-center justify-center space-y-2 group col-span-2"
+              >
+                <div className="p-2 bg-purple-100 rounded-full group-hover:bg-purple-200 transition">
+                  <Shield className="w-6 h-6" />
+                </div>
+                <span>Demo Admin</span>
+              </button>
             </div>
           </div>
         </div>
@@ -248,9 +266,9 @@ function App() {
       </Modal>
 
       {/* Onboarding Tour */}
-      {showTour && (
+      {showTour && (authState.role === 'STUDENT' || authState.role === 'TEACHER') && (
         <OnboardingTour
-          role={authState.role || 'STUDENT'}
+          role={authState.role}
           onComplete={handleTourComplete}
         />
       )}
@@ -276,6 +294,8 @@ function App() {
 
       {authState.role === 'TEACHER' ?
         <TeacherView auth={authState} /> :
+        authState.role === 'ADMIN' ?
+        <AdminView onExit={handleExitAdmin} /> :
         <StudentView
           auth={authState}
           onJoin={handleStudentJoin}

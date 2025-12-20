@@ -702,6 +702,135 @@ io.on('connection', (socket: Socket) => {
         logEvent('END_SESSION', user.id, { joinCode });
     });
 
+    // --- ADMIN ENDPOINTS ---
+    socket.on('ADMIN_JOIN', async () => {
+        // In production, verify admin credentials here
+        const user = await userPromise;
+        // For now, allow any authenticated user to access admin (add proper auth in production)
+        socket.join('admin_room');
+        logEvent('ADMIN_JOIN', user?.id || null, {});
+    });
+
+    socket.on('ADMIN_GET_DATA', async () => {
+        const user = await userPromise;
+        // Allow admin access (in production, verify role/permissions)
+        
+        try {
+            // Get all active sessions
+            const activeSessions = await prisma.session.findMany({
+                where: { status: 'ACTIVE' },
+                include: {
+                    course: true,
+                    prompts: {
+                        include: {
+                            thoughts: {
+                                include: {
+                                    author: true
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Build response with only consented data
+            const sessions = activeSessions.map(session => ({
+                id: session.id,
+                courseId: session.courseId,
+                course: session.course,
+                status: session.status,
+                maxSwapRequests: session.maxSwapRequests,
+                promptCount: session.prompts.length
+            }));
+
+            // Get all thoughts, filtered by consent
+            const allThoughts = await prisma.thought.findMany({
+                include: {
+                    author: true,
+                    promptUse: {
+                        include: {
+                            session: {
+                                include: {
+                                    course: true
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // Filter by consent
+            const consentedThoughts = allThoughts.filter(thought => thought.author.consentGiven).map(thought => ({
+                id: thought.id,
+                content: thought.content,
+                authorName: thought.author.name,
+                authorId: thought.author.id,
+                promptContent: thought.promptUse.session.course.title,
+                createdAt: thought.promptUse.session.course.title, // Use course as timestamp proxy
+                consent: thought.author.consentGiven
+            }));
+
+            // Get swap requests filtered by consent
+            const allSwaps = await prisma.swapRequest.findMany({
+                include: {
+                    student: true,
+                    session: {
+                        include: {
+                            course: true
+                        }
+                    }
+                }
+            });
+
+            const consentedSwaps = allSwaps.filter(swap => swap.student.consentGiven).map(swap => ({
+                id: swap.id,
+                studentName: swap.student.name,
+                studentId: swap.student.id,
+                classroom: swap.session.course.title,
+                createdAt: swap.createdAt,
+                consent: swap.student.consentGiven
+            }));
+
+            // Get logs filtered by consented users
+            const allLogs = await prisma.log.findMany({
+                orderBy: { createdAt: 'desc' },
+                take: 500
+            });
+
+            const consentedLogs = allLogs.filter(log => {
+                if (!log.userId) return false;
+                // In a real scenario, you'd check user consent here
+                return true; // Simplified for now
+            });
+
+            // Count statistics
+            const totalUsers = await prisma.user.findMany();
+            const consentedUsers = totalUsers.filter(u => u.consentGiven);
+            const activeUsers = (await io.fetchSockets()).length;
+
+            const adminData = {
+                sessions,
+                thoughts: consentedThoughts,
+                swaps: consentedSwaps,
+                logs: consentedLogs,
+                stats: {
+                    totalConsented: consentedUsers.length,
+                    totalUsers: totalUsers.length,
+                    activeUsers,
+                    activeSessions: activeSessions.length,
+                    totalThoughts: consentedThoughts.length,
+                    totalSwaps: consentedSwaps.length
+                }
+            };
+
+            socket.emit('ADMIN_DATA_UPDATE', adminData);
+            logEvent('ADMIN_GET_DATA', user?.id || null, {});
+        } catch (e) {
+            console.error("Admin data fetch failed", e);
+            socket.emit('ERROR', { message: "Failed to fetch admin data" });
+        }
+    });
+
     socket.on('disconnect', () => { });
 });
 

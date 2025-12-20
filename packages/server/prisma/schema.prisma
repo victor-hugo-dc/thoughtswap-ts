@@ -12,7 +12,7 @@ model User {
   canvasId     String   @unique
   name         String
   email        String   @unique
-  role         String   @default("STUDENT") // STUDENT or TEACHER
+  role         String   @default("STUDENT") // STUDENT, TEACHER, or ADMIN
   accessToken  String
   refreshToken String?
   
