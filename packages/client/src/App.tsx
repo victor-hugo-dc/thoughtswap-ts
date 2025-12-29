@@ -99,7 +99,7 @@ function App() {
       socket.off('AUTH_ERROR', handleAuthError);
       socket.off('CONSENT_STATUS', handleConsentStatus);
     };
-  }, []);
+  }, [authState.role]);
 
   useEffect(() => {
     if (authState.isLoggedIn && !socket.connected) {
@@ -164,6 +164,24 @@ function App() {
       socket.disconnect();
     }, 500); // 500ms delay to allow network flush
   };
+
+  // Handle tab/window close
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (authState.role === 'TEACHER' && authState.isLoggedIn) {
+        const activeJoinCode = localStorage.getItem('thoughtswap_joinCode');
+        const activeTeacher = localStorage.getItem('thoughtswap_teacher_active');
+
+        if (activeJoinCode && activeTeacher === 'true') {
+          console.log("Ending session on tab close:", activeJoinCode);
+          socket.emit('END_SESSION', { joinCode: activeJoinCode });
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [authState.role, authState.isLoggedIn]);
 
   const handleExitAdmin = () => {
     handleLogout();

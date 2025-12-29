@@ -831,7 +831,68 @@ io.on('connection', (socket: Socket) => {
         }
     });
 
-    socket.on('disconnect', () => { });
+    socket.on('GET_PREVIOUS_SESSIONS', async () => {
+        const user = await userPromise;
+        if (!user || role !== 'TEACHER') return;
+        
+        try {
+            const previousSessions = await prisma.session.findMany({
+                where: {
+                    course: {
+                        teacherId: user.id
+                    },
+                    status: 'COMPLETED'
+                },
+                include: {
+                    course: true,
+                    prompts: true,
+                    _count: {
+                        select: { swapRequests: true }
+                    }
+                },
+                orderBy: { id: 'desc' }
+            });
+
+            const sessionData = previousSessions.map(session => ({
+                id: session.id,
+                joinCode: session.course.joinCode,
+                title: session.course.title,
+                status: session.status,
+                promptCount: session.prompts.length,
+                swapCount: session._count.swapRequests
+            }));
+
+            socket.emit('PREVIOUS_SESSIONS', sessionData);
+        } catch (e) {
+            console.error('Failed to fetch previous sessions:', e);
+        }
+    });
+
+    socket.on('disconnect', async () => {
+        // If a teacher disconnects, mark their active sessions as COMPLETED
+        const user = await userPromise;
+        if (user && role === 'TEACHER') {
+            // Find all active sessions for this teacher
+            const activeSessions = await prisma.session.findMany({
+                where: {
+                    status: 'ACTIVE',
+                    course: {
+                        teacherId: user.id
+                    }
+                },
+                include: { course: true }
+            });
+
+            // Mark them all as completed
+            for (const session of activeSessions) {
+                await prisma.session.update({
+                    where: { id: session.id },
+                    data: { status: 'COMPLETED' }
+                });
+                logEvent('SESSION_AUTO_ENDED', user.id, { sessionId: session.id, joinCode: session.course.joinCode });
+            }
+        }
+    });
 });
 
 const PORT = process.env.PORT || 3001;

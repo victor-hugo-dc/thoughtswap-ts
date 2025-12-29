@@ -63,6 +63,10 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>([]);
     const [showBank, setShowBank] = useState(false);
 
+    // Previous Sessions State
+    const [previousSessions, setPreviousSessions] = useState<any[]>([]);
+    const [showPreviousSessions, setShowPreviousSessions] = useState(false);
+
     // Modal State
     const [modal, setModal] = useState<{
         isOpen: boolean;
@@ -123,6 +127,8 @@ export default function TeacherView({ auth }: TeacherViewProps) {
 
         socket.on('SAVED_PROMPTS_LIST', (data) => setSavedPrompts(data));
 
+        socket.on('PREVIOUS_SESSIONS', (data) => setPreviousSessions(data));
+
         socket.on('ERROR', (data) => {
             showModal('error', 'Error', data.message);
             if (data.message.includes('ended') || data.message.includes('Invalid')) {
@@ -132,6 +138,9 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             }
         });
 
+        // Fetch previous sessions on mount
+        socket.emit('GET_PREVIOUS_SESSIONS');
+
         return () => {
             socket.off('CLASS_STARTED');
             socket.off('PARTICIPANTS_UPDATE');
@@ -139,6 +148,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
             socket.off('DISTRIBUTION_UPDATE');
             socket.off('SWAP_COMPLETED');
             socket.off('SAVED_PROMPTS_LIST');
+            socket.off('PREVIOUS_SESSIONS');
             socket.off('ERROR');
         };
     }, [auth]);
@@ -227,7 +237,7 @@ export default function TeacherView({ auth }: TeacherViewProps) {
     // --- IDLE STATE ---
     if (!isActive) {
         return (
-            <div className="flex flex-col items-center justify-center min-h-[calc(100vh-100px)] p-4">
+            <div className="flex flex-col min-h-[calc(100vh-100px)] p-4">
                 <TeacherPromptBank
                     isOpen={showBank} onClose={() => setShowBank(false)}
                     savedPrompts={savedPrompts} onLoad={handleLoadPrompt} onDelete={handleDeletePrompt}
@@ -235,37 +245,73 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                 />
                 <Modal {...modal} onClose={() => setModal({ ...modal, isOpen: false })} />
 
-                <div className="bg-white p-8 sm:p-10 rounded-2xl shadow-xl text-center max-w-lg w-full border border-gray-100">
-                    <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
-                        <Play className="w-8 h-8 text-indigo-600 ml-1" />
-                    </div>
-                    <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Start a New Class</h2>
-                    <p className="text-gray-600 mb-8">Create a temporary room for your students.</p>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+                    <div className="lg:col-span-2 flex items-center justify-center">
+                        <div className="bg-white p-8 sm:p-10 rounded-2xl shadow-xl text-center w-full border border-gray-100">
+                            <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
+                                <Play className="w-8 h-8 text-indigo-600 ml-1" />
+                            </div>
+                            <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">Start a New Class</h2>
+                            <p className="text-gray-600 mb-8">Create a temporary room for your students.</p>
 
-                    {/* Staged Prompt Preview */}
-                    {promptInput && (
-                        <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group w-full">
-                            <div className="flex justify-between items-start">
-                                <div className="flex-1 overflow-hidden">
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${promptType === 'MC' ? 'bg-purple-500' : promptType === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'}`}>{promptType}</span>
-                                        <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Staged</p>
+                            {/* Staged Prompt Preview */}
+                            {promptInput && (
+                                <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group w-full">
+                                    <div className="flex justify-between items-start">
+                                        <div className="flex-1 overflow-hidden">
+                                            <div className="flex items-center gap-2 mb-1">
+                                                <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded text-white ${promptType === 'MC' ? 'bg-purple-500' : promptType === 'SCALE' ? 'bg-orange-500' : 'bg-blue-500'}`}>{promptType}</span>
+                                                <p className="text-xs font-bold text-indigo-500 uppercase tracking-wider">Staged</p>
+                                            </div>
+                                            <p className="text-gray-800 font-medium truncate">{promptInput}</p>
+                                            {promptType === 'MC' && <p className="text-xs text-gray-500">{mcOptions.filter(o => o).length} Options</p>}
+                                        </div>
+                                        <button onClick={() => { setPromptInput(''); setPromptType('TEXT'); setMcOptions(['', '']); }} className="text-gray-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4" /></button>
                                     </div>
-                                    <p className="text-gray-800 font-medium truncate">{promptInput}</p>
-                                    {promptType === 'MC' && <p className="text-xs text-gray-500">{mcOptions.filter(o => o).length} Options</p>}
                                 </div>
-                                <button onClick={() => { setPromptInput(''); setPromptType('TEXT'); setMcOptions(['', '']); }} className="text-gray-400 hover:text-red-500 p-1"><Trash2 className="w-4 h-4" /></button>
+                            )}
+
+                            <div className="space-y-3">
+                                <button onClick={() => socket.emit('TEACHER_START_CLASS')} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105">
+                                    Launch Session
+                                </button>
+                                <button onClick={() => setShowBank(true)} className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center">
+                                    <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
+                                </button>
                             </div>
                         </div>
-                    )}
+                    </div>
 
-                    <div className="space-y-3">
-                        <button onClick={() => socket.emit('TEACHER_START_CLASS')} className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105">
-                            Launch Session
-                        </button>
-                        <button onClick={() => setShowBank(true)} className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center">
-                            <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
-                        </button>
+                    {/* Previous Sessions Sidebar */}
+                    <div className="bg-white p-6 rounded-2xl shadow-lg border border-gray-200 h-fit">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-lg font-bold text-gray-800">Previous Sessions</h3>
+                            {previousSessions.length > 0 && (
+                                <button 
+                                    onClick={() => setShowPreviousSessions(!showPreviousSessions)}
+                                    className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 px-2 py-1 rounded transition"
+                                >
+                                    {showPreviousSessions ? 'Hide' : 'Show'} ({previousSessions.length})
+                                </button>
+                            )}
+                        </div>
+
+                        {previousSessions.length === 0 ? (
+                            <p className="text-sm text-gray-500 text-center py-4">No previous sessions yet</p>
+                        ) : showPreviousSessions ? (
+                            <div className="space-y-3 max-h-96 overflow-y-auto">
+                                {previousSessions.map((session: any) => (
+                                    <div key={session.id} className="p-3 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 transition">
+                                        <div className="flex justify-between items-start gap-2">
+                                            <div className="flex-1 min-w-0">
+                                                <p className="text-sm font-semibold text-gray-800 truncate">{session.title}</p>
+                                                <p className="text-xs text-gray-500">{session.promptCount} prompts • {session.swapCount} swaps</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : null}
                     </div>
                 </div>
             </div>
