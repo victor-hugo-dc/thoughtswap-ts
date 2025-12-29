@@ -246,62 +246,67 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
-
-      {/* Consent Modal */}
-      <Modal
-        isOpen={showConsentModal}
-        onClose={() => handleConsentResponse(false)}
-        title="Research Consent"
-        type="confirm"
-        confirmText="I Consent"
-        cancelText="I Decline"
-        onConfirm={() => handleConsentResponse(true)}
-      >
-        <div className="space-y-4 text-sm text-gray-600">
-          <p>Welcome to ThoughtSwap! This application is part of a research project on classroom interaction.</p>
-          <p>By clicking "I Consent", you agree to allow your anonymized usage data (prompts, thoughts, interaction logs) to be used for research purposes.</p>
-          <p>You can still use the application if you decline, but your data will be excluded from research analysis.</p>
-        </div>
-      </Modal>
-
-      {/* Onboarding Tour */}
-      {showTour && (authState.role === 'STUDENT' || authState.role === 'TEACHER') && (
-        <OnboardingTour
-          role={authState.role}
-          onComplete={handleTourComplete}
-        />
-      )}
-
-      <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
-        <div className="flex items-center space-x-3">
-          <Zap className="h-6 w-6 text-indigo-500" />
-          <h1 className="text-2xl font-bold text-gray-900">ThoughtSwap</h1>
-        </div>
-        <div className="flex items-center space-x-4">
-          <span className="text-sm font-medium text-gray-600">
-            {authState.name} <span className="bg-gray-100 px-2 py-1 rounded text-xs ml-1 border border-gray-200">{authState.role}</span>
-          </span>
-          <button
-            onClick={handleLogout}
-            className="flex items-center space-x-1 text-red-500 hover:text-red-700 transition"
+    <div className="min-h-screen bg-gray-50">
+      {authState.role === 'ADMIN' ? (
+        <AdminView onExit={handleExitAdmin} />
+      ) : (
+        <>
+          {/* Consent Modal */}
+          <Modal
+            isOpen={showConsentModal}
+            onClose={() => handleConsentResponse(false)}
+            title="Research Consent"
+            type="confirm"
+            confirmText="I Consent"
+            cancelText="I Decline"
+            onConfirm={() => handleConsentResponse(true)}
           >
-            <LogOut className="h-5 w-5" />
-            <span className="hidden sm:inline">Logout</span>
-          </button>
-        </div>
-      </header>
+            <div className="space-y-4 text-sm text-gray-600">
+              <p>Welcome to ThoughtSwap! This application is part of a research project on classroom interaction.</p>
+              <p>By clicking "I Consent", you agree to allow your anonymized usage data (prompts, thoughts, interaction logs) to be used for research purposes.</p>
+              <p>You can still use the application if you decline, but your data will be excluded from research analysis.</p>
+            </div>
+          </Modal>
 
-      {authState.role === 'TEACHER' ?
-        <TeacherView auth={authState} /> :
-        authState.role === 'ADMIN' ?
-        <AdminView onExit={handleExitAdmin} /> :
-        <StudentView
-          auth={authState}
-          onJoin={handleStudentJoin}
-          joinCode={joinCode}
-        />
-      }
+          {/* Onboarding Tour */}
+          {showTour && (authState.role === 'STUDENT' || authState.role === 'TEACHER') && (
+            <OnboardingTour
+              role={authState.role}
+              onComplete={handleTourComplete}
+            />
+          )}
+
+          <div className="p-4 sm:p-8">
+            <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
+              <div className="flex items-center space-x-3">
+                <Zap className="h-6 w-6 text-indigo-500" />
+                <h1 className="text-2xl font-bold text-gray-900">ThoughtSwap</h1>
+              </div>
+              <div className="flex items-center space-x-4">
+                <span className="text-sm font-medium text-gray-600">
+                  {authState.name} <span className="bg-gray-100 px-2 py-1 rounded text-xs ml-1 border border-gray-200">{authState.role}</span>
+                </span>
+                <button
+                  onClick={handleLogout}
+                  className="flex items-center space-x-1 text-red-500 hover:text-red-700 transition"
+                >
+                  <LogOut className="h-5 w-5" />
+                  <span className="hidden sm:inline">Logout</span>
+                </button>
+              </div>
+            </header>
+
+            {authState.role === 'TEACHER' ?
+              <TeacherView auth={authState} /> :
+              <StudentView
+                auth={authState}
+                onJoin={handleStudentJoin}
+                joinCode={joinCode}
+              />
+            }
+          </div>
+        </>
+      )}
     </div>
   );
 }
