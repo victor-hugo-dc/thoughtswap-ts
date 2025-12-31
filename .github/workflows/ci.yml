@@ -1,0 +1,94 @@
+name: ThoughtSwap CI/CD Pipeline
+
+on:
+    push:
+        branches: [main, develop]
+    pull_request:
+        branches: [main, develop]
+
+jobs:
+    lint-and-format:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout Code
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.head_ref }} # Checkout the branch for PR auto-commits
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: 'npm'
+
+            - name: Install Dependencies
+              run: npm install
+
+            # Check styling (Prettier) as required by syllabus
+            - name: Check Formatting
+              run: npx prettier --check "**/*.{ts,tsx,js,jsx,json,md}"
+
+            # Attempt to auto-format on PR if check fails [cite: 150]
+            - name: Auto-format on Pull Request
+              if: failure() && github.event_name == 'pull_request'
+              run: |
+                  npm run lint-staged
+
+            - name: Commit formatting changes
+              if: github.event_name == 'pull_request'
+              uses: stefanzweifel/git-auto-commit-action@v5
+              with:
+                  commit_message: 'style: auto-format code with Prettier'
+
+            # Run ESLint for client code quality
+            - name: Lint Client
+              run: npm run lint --workspace=packages/client
+
+    build-and-test:
+        runs-on: ubuntu-latest
+        services:
+            # Provision a database for Prisma server tests
+            postgres:
+                image: postgres:15
+                env:
+                    POSTGRES_USER: user
+                    POSTGRES_PASSWORD: password
+                    POSTGRES_DB: thoughtswap
+                ports:
+                    - 5432:5432
+                options: >-
+                    --health-cmd pg_isready
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+
+        steps:
+            - name: Checkout Code
+              uses: actions/checkout@v4
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '20'
+                  cache: 'npm'
+
+            - name: Install Dependencies
+              run: npm install
+
+            # Generate Prisma Client and run builds [cite: 129]
+            - name: Server - Build
+              env:
+                  DATABASE_URL: postgresql://user:password@localhost:5432/thoughtswap
+              run: |
+                  cd packages/server
+                  npx prisma generate
+                  npm run build
+
+            - name: Client - Build
+              run: |
+                  cd packages/client
+                  npm run build
+
+            # Run basic Reachability Smoke Test [cite: 145, 146]
+            - name: Run Smoke Test
+              run: npm run smoke-test --workspace=packages/server
