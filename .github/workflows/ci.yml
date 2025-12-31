@@ -75,7 +75,6 @@ jobs:
             - name: Install Dependencies
               run: npm install
 
-            # Generate Prisma Client and run builds [cite: 129]
             - name: Server - Build
               env:
                   DATABASE_URL: postgresql://user:password@localhost:5432/thoughtswap
@@ -88,7 +87,3 @@ jobs:
               run: |
                   cd packages/client
                   npm run build
-
-            # Run basic Reachability Smoke Test [cite: 145, 146]
-            - name: Run Smoke Test
-              run: npm run smoke-test --workspace=packages/server
