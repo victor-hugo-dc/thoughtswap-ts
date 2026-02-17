@@ -1,5 +1,7 @@
 name: ThoughtSwap CI/CD Pipeline
 
+permissions:
+  contents: write
 on:
     push:
         branches: [main, develop]
