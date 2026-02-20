@@ -49,7 +49,7 @@ function App() {
     const [showTour, setShowTour] = useState(false);
 
     // TODO: Change the following to the correct Canvas Auth URL
-    const CANVAS_AUTH_URL = 'http://localhost:8000/accounts/canvas/login/';
+    const CANVAS_AUTH_URL = '/accounts/canvas/login/';
 
     const updateAuth = (newState: AuthState) => {
         setAuthState(newState);

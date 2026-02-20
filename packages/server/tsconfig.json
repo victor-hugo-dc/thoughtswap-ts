@@ -2,7 +2,7 @@
     // Visit https://aka.ms/tsconfig to read more about this file
     "compilerOptions": {
         // File Layout
-        "rootDir": ".",
+        "rootDir": "./src",
         "outDir": "./dist",
 
         // Environment Settings
@@ -42,5 +42,6 @@
         "moduleDetection": "force",
         "skipLibCheck": true,
         "esModuleInterop": true
-    }
+    },
+    "include": ["src"]
 }

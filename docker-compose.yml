@@ -1,15 +1,53 @@
 services:
     postgres:
         image: postgres:15-alpine
+        restart: always
         container_name: thoughtswap_db
         environment:
-            POSTGRES_USER: user
-            POSTGRES_PASSWORD: password
-            POSTGRES_DB: thoughtswap
+            POSTGRES_USER: ${POSTGRES_USER:-user}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+            POSTGRES_DB: ${POSTGRES_DB:-thoughtswap}
         ports:
-            - '5432:5432'
+            - '${POSTGRES_HOST_PORT:-5432}:5432'
         volumes:
             - pgdata:/var/lib/postgresql/data
+
+    server:
+        build:
+            context: .
+            dockerfile: packages/server/Dockerfile
+            args:
+                DATABASE_URL: ${DATABASE_URL:-postgresql://user:password@postgres:5432/thoughtswap}
+                PORT: ${SERVER_PORT:-3001}
+        restart: always
+        command: sh -c "npx prisma migrate deploy && npm start"
+        ports:
+            - '${SERVER_HOST_PORT:-8000}:${SERVER_PORT:-3001}'
+        environment:
+            DATABASE_URL: ${DATABASE_URL:-postgresql://user:password@postgres:5432/thoughtswap}
+            PORT: ${SERVER_PORT:-3001}
+            FRONTEND_URL: ${FRONTEND_URL:-http://localhost:${CLIENT_HOST_PORT:-5173}}
+            CANVAS_BASE_URL: ${CANVAS_BASE_URL}
+            CANVAS_CLIENT_ID: ${CANVAS_CLIENT_ID}
+            CANVAS_CLIENT_SECRET: ${CANVAS_CLIENT_SECRET}
+            CANVAS_REDIRECT_URI: ${CANVAS_REDIRECT_URI}
+        depends_on:
+            - postgres
+
+    client:
+        build:
+            context: .
+            dockerfile: packages/client/Dockerfile
+            args:
+                PORT: ${CLIENT_PORT:-5173}
+        restart: always
+        ports:
+            - '${CLIENT_HOST_PORT:-5173}:${CLIENT_PORT:-5173}'
+        environment:
+            SERVER_URL: ${SERVER_URL:-http://server:${SERVER_PORT:-3001}}
+            PORT: ${CLIENT_PORT:-5173}
+        depends_on:
+            - server
 
 volumes:
     pgdata:
