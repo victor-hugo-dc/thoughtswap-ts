@@ -9,7 +9,7 @@
  */
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -19,11 +19,13 @@ const router = Router();
 
 const REQUIRED_SCOPES = [
     'url:GET|/api/v1/accounts/:account_id/terms',
+    'url:GET|/api/v1/accounts/:account_id/terms/:id',
     'url:GET|/api/v1/courses/:course_id/enrollments',
     'url:GET|/api/v1/sections/:section_id/enrollments',
     'url:GET|/api/v1/users/:user_id/enrollments',
     'url:GET|/api/v1/courses/:course_id/sections',
     'url:GET|/api/v1/users/:user_id/profile',
+    'url:GET|/api/v1/courses',
 ].join(' ');
 
 // 1. Configuration Constants from .env
@@ -39,10 +41,48 @@ if (!CANVAS_CLIENT_ID || !CANVAS_CLIENT_SECRET || !CANVAS_BASE_URL || !CANVAS_RE
     throw new Error('Missing one or more Canvas OAuth environment variables.');
 }
 
+// Admin whitelist - only these emails can be admins
+const ADMIN_WHITELIST = [''];
+
+// Cache for enrollment terms to avoid repeated API calls
+const termCache: { [key: number]: string } = {};
+
+const fetchTermName = async (
+    rootAccountId: number,
+    termId: number,
+    accessToken: string
+): Promise<string> => {
+    // Check cache first
+    if (termCache[termId]) {
+        return termCache[termId];
+    }
+
+    try {
+        const termResponse = await axios.get(
+            `${CANVAS_BASE_URL}/api/v1/accounts/${rootAccountId}/terms/${termId}`,
+            {
+                headers: { Authorization: `Bearer ${accessToken}` },
+            }
+        );
+        const termName = termResponse.data.name;
+        termCache[termId] = termName;
+        return termName;
+    } catch (error) {
+        // Silently handle errors
+        return 'Unknown';
+    }
+};
+
 const determineRole = async (
     userId: string,
-    accessToken: string
-): Promise<'TEACHER' | 'STUDENT' | 'OTHER'> => {
+    accessToken: string,
+    email: string
+): Promise<'TEACHER' | 'STUDENT' | 'ADMIN' | 'OTHER'> => {
+    // Check if user is in admin whitelist
+    if (ADMIN_WHITELIST.includes(email)) {
+        return 'ADMIN';
+    }
+
     const enrollmentsResponse = await axios.get(
         `${CANVAS_BASE_URL}/api/v1/users/${userId}/enrollments`,
         {
@@ -54,6 +94,18 @@ const determineRole = async (
     if (roles.includes('TeacherEnrollment')) return 'TEACHER';
     if (roles.includes('StudentEnrollment')) return 'STUDENT';
     return 'OTHER';
+};
+
+const fetchUserCourses = async (userId: string, accessToken: string): Promise<any[]> => {
+    try {
+        const coursesResponse = await axios.get(`${CANVAS_BASE_URL}/api/v1/courses`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        return coursesResponse.data || [];
+    } catch (error) {
+        console.error('Error fetching Canvas courses:', error);
+        return [];
+    }
 };
 
 router.get('/', (req: Request, res: Response) => {
@@ -116,8 +168,38 @@ router.get('/callback', async (req: Request, res: Response) => {
             throw new Error('Missing primary email or user ID from Canvas profile.');
         }
 
-        // Step 5: Upsert User into PostgreSQL
-        const role = await determineRole(user.id, access_token);
+        // Step 5: Determine user role (including admin check)
+        const role = await determineRole(user.id, access_token, userEmail);
+
+        // Step 6: Fetch user's Canvas courses
+        const canvasCourses = await fetchUserCourses(user.id, access_token);
+        for (const canvasCourse of canvasCourses) {
+            // Skip courses without names
+            if (!canvasCourse.name) {
+                continue;
+            }
+
+            let semester = 'Unknown';
+            if (canvasCourse.enrollment_term_id && canvasCourse.root_account_id) {
+                try {
+                    semester = await fetchTermName(
+                        canvasCourse.root_account_id,
+                        canvasCourse.enrollment_term_id,
+                        access_token
+                    );
+                } catch (error) {
+                    // Silently handle errors, semester remains 'Unknown'
+                }
+            }
+
+            // Only log and process courses with defined semesters
+            if (semester !== 'Unknown') {
+                console.log('Course:', canvasCourse.name);
+                console.log('Semester:', semester);
+            }
+        }
+
+        console.log(termCache);
 
         const localUser = await prisma.user.upsert({
             where: { canvasId: String(user.id) },
@@ -138,7 +220,93 @@ router.get('/callback', async (req: Request, res: Response) => {
             },
         });
 
-        // Final Redirect back to the frontend
+        // Step 7: Sync Canvas courses to database based on role
+        if (role === 'TEACHER') {
+            // For teachers: create/update Course records for their courses
+            for (const canvasCourse of canvasCourses) {
+                // Skip courses without names
+                if (!canvasCourse.name) {
+                    continue;
+                }
+
+                let semester = 'Unknown';
+                if (canvasCourse.enrollment_term_id && canvasCourse.root_account_id) {
+                    try {
+                        semester = await fetchTermName(
+                            canvasCourse.root_account_id,
+                            canvasCourse.enrollment_term_id,
+                            access_token
+                        );
+                    } catch (error) {
+                        // Silently handle errors, semester remains 'Unknown'
+                    }
+                }
+
+                await prisma.course.upsert({
+                    where: { canvasId: String(canvasCourse.id) },
+                    update: { title: canvasCourse.name, semester },
+                    create: {
+                        canvasId: String(canvasCourse.id),
+                        title: canvasCourse.name,
+                        semester,
+                        teacherId: localUser.id,
+                    },
+                });
+            }
+        } else if (role === 'STUDENT') {
+            // For students: create courses if they don't exist, then create enrollments
+            // This allows the first student to persist courses so teachers can activate them later
+            for (const canvasCourse of canvasCourses) {
+                // Skip courses without names
+                if (!canvasCourse.name) {
+                    continue;
+                }
+
+                let semester = 'Unknown';
+                if (canvasCourse.enrollment_term_id && canvasCourse.root_account_id) {
+                    try {
+                        semester = await fetchTermName(
+                            canvasCourse.root_account_id,
+                            canvasCourse.enrollment_term_id,
+                            access_token
+                        );
+                    } catch (error) {
+                        // Silently handle errors, semester remains 'Unknown'
+                    }
+                }
+
+                // Create or find the course
+                // Note: use unchecked input to bypass Prisma's relation type validation
+                // since teacherId is optional and we want it to default to null
+                const dbCourse = await prisma.course.upsert({
+                    where: { canvasId: String(canvasCourse.id) },
+                    update: { title: canvasCourse.name, semester },
+                    create: {
+                        canvasId: String(canvasCourse.id),
+                        title: canvasCourse.name,
+                        semester,
+                        // teacherId omitted - defaults to null
+                    } as Prisma.CourseUncheckedCreateInput,
+                });
+
+                // Create enrollment
+                await prisma.courseEnrollment.upsert({
+                    where: {
+                        studentId_courseId: {
+                            studentId: localUser.id,
+                            courseId: dbCourse.id,
+                        },
+                    },
+                    update: {},
+                    create: {
+                        studentId: localUser.id,
+                        courseId: dbCourse.id,
+                    },
+                });
+            }
+        }
+
+        // Final Redirect back to the frontend (without courses - they'll be fetched via API)
         const frontendRedirect = `${FRONTEND_URL}/auth/success?name=${encodeURIComponent(localUser.name)}&role=${localUser.role}&email=${encodeURIComponent(localUser.email)}`;
 
         return res.redirect(frontendRedirect);

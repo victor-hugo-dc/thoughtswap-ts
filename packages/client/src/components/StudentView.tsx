@@ -29,9 +29,18 @@ interface AuthData {
     role: string | null;
 }
 
+interface Course {
+    id: string;
+    canvasId: string;
+    title: string;
+    teacherId: string;
+    isActive: boolean;
+}
+
 interface StudentViewProps {
     joinCode: string;
     auth: AuthData;
+    courses: Course[];
     onJoin: (code: string) => void;
 }
 
@@ -64,7 +73,7 @@ interface RestoreStateData {
     status: Status;
 }
 
-export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps) {
+export default function StudentView({ joinCode, auth, courses, onJoin }: StudentViewProps) {
     const [status, setStatus] = useState<Status>('IDLE');
     const [inputCode, setInputCode] = useState(joinCode);
 
@@ -230,6 +239,26 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
         };
     }, [status, auth, sendNotification]);
 
+    const handleJoinCourse = (course: Course) => {
+        if (!course.isActive) {
+            setModal({
+                isOpen: true,
+                type: 'warning',
+                title: 'Course Not Active',
+                message: 'This course is not currently active. Please try again later.',
+            });
+            return;
+        }
+        // Use courseId as the "room code" internally
+        setInputCode(course.id);
+        if (!socket.connected) {
+            socket.auth = { name: auth.name, role: auth.role, email: auth.email };
+            socket.connect();
+        }
+        socket.emit('JOIN_ROOM', { joinCode: course.id }); // Using courseId as joinCode
+        onJoin(course.id);
+    };
+
     const handleJoinClick = () => {
         if (inputCode.length > 0) {
             if (!socket.connected) {
@@ -277,31 +306,85 @@ export default function StudentView({ joinCode, auth, onJoin }: StudentViewProps
     const renderContent = () => {
         switch (status) {
             case 'IDLE':
+                const activeCourses = courses.filter((c) => c.isActive);
                 return (
-                    <div className="p-8 bg-white rounded-xl shadow-lg max-w-sm w-full">
-                        <h3 className="text-2xl font-bold mb-4 text-gray-800">Join a Course</h3>
-                        <p className="text-gray-600 mb-6">
-                            Enter the 6-character room code from your teacher.
-                        </p>
+                    <div className="w-full max-w-2xl">
+                        <div className="p-8 bg-white rounded-xl shadow-lg">
+                            <h3 className="text-2xl font-bold mb-4 text-gray-800">
+                                Available Classes
+                            </h3>
+                            <p className="text-gray-600 mb-6">
+                                Select an active class to join the session.
+                            </p>
 
-                        <div className="space-y-4">
-                            <input
-                                type="text"
-                                placeholder="Room Code"
-                                value={inputCode}
-                                onChange={(e) => {
-                                    setInputCode(e.target.value.toUpperCase());
-                                }}
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg text-center text-xl font-mono tracking-widest uppercase focus:ring-indigo-500 focus:border-indigo-500"
-                                maxLength={6}
-                            />
-                            <button
-                                onClick={handleJoinClick}
-                                disabled={inputCode.length !== 6}
-                                className="w-full flex items-center justify-center px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                                <Users className="w-5 h-5 mr-2" /> Join
-                            </button>
+                            {activeCourses.length === 0 ? (
+                                <div className="text-center py-12 px-4 bg-gray-50 rounded-xl border border-gray-200">
+                                    <Users className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                                    <p className="text-gray-600 font-medium">No active classes</p>
+                                    <p className="text-sm text-gray-500 mt-2">
+                                        Your teacher hasn't activated any classes yet. Check back
+                                        soon!
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 gap-3">
+                                    {activeCourses.map((course) => (
+                                        <div
+                                            key={course.id}
+                                            className="p-4 border border-gray-200 rounded-lg hover:bg-indigo-50 hover:border-indigo-300 transition cursor-pointer"
+                                            onClick={() => handleJoinCourse(course)}
+                                        >
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex-1">
+                                                    <h4 className="font-bold text-gray-800">
+                                                        {course.title}
+                                                    </h4>
+                                                    <p className="text-xs text-gray-500 mt-1">
+                                                        Ready to join
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleJoinCourse(course);
+                                                    }}
+                                                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-lg transition flex items-center"
+                                                >
+                                                    <Users className="w-4 h-4 mr-2" /> Join
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+
+                            {/* Fallback room code input for backwards compatibility */}
+                            {activeCourses.length === 0 && (
+                                <div className="mt-6 pt-6 border-t border-gray-200">
+                                    <p className="text-xs text-gray-500 mb-3 uppercase font-bold">
+                                        Alternative: Enter Room Code
+                                    </p>
+                                    <div className="space-y-3">
+                                        <input
+                                            type="text"
+                                            placeholder="Room Code"
+                                            value={inputCode}
+                                            onChange={(e) => {
+                                                setInputCode(e.target.value.toUpperCase());
+                                            }}
+                                            className="w-full px-4 py-2 border border-gray-300 rounded-lg text-center text-xl font-mono tracking-widest uppercase focus:ring-indigo-500 focus:border-indigo-500"
+                                            maxLength={36}
+                                        />
+                                        <button
+                                            onClick={handleJoinClick}
+                                            disabled={inputCode.length === 0}
+                                            className="w-full flex items-center justify-center px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            <Users className="w-5 h-5 mr-2" /> Join
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 );

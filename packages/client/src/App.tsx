@@ -10,19 +10,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { socket } from './socket';
 import StudentView from './components/StudentView';
+import StudentCourseSelection from './components/StudentCourseSelection';
 import TeacherView from './components/TeacherView';
 import AdminView from './components/AdminView';
 import Modal from './components/Modal';
 import OnboardingTour from './components/OnboardingTour';
-import { LogOut, Users, Zap, Play, GraduationCap, Shield } from 'lucide-react';
+import { LogOut, Users, Zap } from 'lucide-react';
 
 type UserRole = 'STUDENT' | 'TEACHER' | 'ADMIN' | null;
+
+interface Course {
+    id: string;
+    canvasId: string;
+    title: string;
+    teacherId: string;
+    isActive: boolean;
+}
 
 interface AuthState {
     isLoggedIn: boolean;
     name: string | null;
     email: string | null;
     role: UserRole;
+    courses?: Course[];
     expiry?: number;
 }
 
@@ -47,6 +57,7 @@ function App() {
     const [authErrorModal, setAuthErrorModal] = useState(false);
     const [showConsentModal, setShowConsentModal] = useState(false);
     const [showTour, setShowTour] = useState(false);
+    const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
 
     // TODO: Change the following to the correct Canvas Auth URL
     const CANVAS_AUTH_URL = '/accounts/canvas/login/';
@@ -73,7 +84,7 @@ function App() {
 
     useEffect(() => {
         // Only run auth success handling on first mount
-        const handleAuthSuccess = () => {
+        const handleAuthSuccess = async () => {
             if (window.location.pathname === '/auth/success') {
                 const params = new URLSearchParams(window.location.search);
                 const name = params.get('name');
@@ -81,13 +92,37 @@ function App() {
                 const email = params.get('email');
 
                 if (name && role && email) {
-                    updateAuth({
+                    const authData: AuthState = {
                         isLoggedIn: true,
                         name: decodeURIComponent(name),
                         email: decodeURIComponent(email),
                         role: role,
+                        courses: [],
                         expiry: Date.now() + SESSION_DURATION,
-                    });
+                    };
+
+                    updateAuth(authData);
+
+                    // Fetch courses from API
+                    try {
+                        const coursesResponse = await fetch('/api/courses', {
+                            method: 'GET',
+                            headers: {
+                                'x-user-email': decodeURIComponent(email),
+                                'x-user-role': role,
+                            },
+                        });
+
+                        if (coursesResponse.ok) {
+                            const data = await coursesResponse.json();
+                            updateAuth({
+                                ...authData,
+                                courses: data.courses || [],
+                            });
+                        }
+                    } catch (error) {
+                        console.error('Failed to fetch courses:', error);
+                    }
                 }
                 window.history.replaceState({}, document.title, '/');
             }
@@ -147,22 +182,6 @@ function App() {
     const handleTourComplete = () => {
         localStorage.setItem('thoughtswap_tour_completed', 'true');
         setShowTour(false);
-    };
-
-    const handleDemoLogin = (role: UserRole) => {
-        const randomId = Math.floor(Math.random() * 10000);
-        updateAuth({
-            isLoggedIn: true,
-            name:
-                role === 'TEACHER'
-                    ? `Guest Teacher ${randomId}`
-                    : role === 'ADMIN'
-                      ? `Admin User ${randomId}`
-                      : `Guest Student ${randomId}`,
-            email: `guest_${role?.toLowerCase()}_${randomId}@demo.com`,
-            role: role,
-            expiry: Date.now() + SESSION_DURATION,
-        });
     };
 
     const handleLogout = () => {
@@ -245,47 +264,6 @@ function App() {
                             <Users className="h-6 w-6" />
                             <span>Login with Canvas</span>
                         </a>
-
-                        <div className="relative">
-                            <div className="absolute inset-0 flex items-center">
-                                <div className="w-full border-t border-gray-200"></div>
-                            </div>
-                            <div className="relative flex justify-center text-sm">
-                                <span className="px-2 bg-white text-gray-500">
-                                    Or try Demonstration Mode
-                                </span>
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <button
-                                onClick={() => handleDemoLogin('TEACHER')}
-                                className="px-6 py-4 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex flex-col items-center justify-center space-y-2 group"
-                            >
-                                <div className="p-2 bg-indigo-100 rounded-full group-hover:bg-indigo-200 transition">
-                                    <GraduationCap className="w-6 h-6" />
-                                </div>
-                                <span>Demo Teacher</span>
-                            </button>
-                            <button
-                                onClick={() => handleDemoLogin('STUDENT')}
-                                className="px-6 py-4 bg-white border-2 border-green-100 text-green-600 font-bold rounded-xl hover:bg-green-50 transition flex flex-col items-center justify-center space-y-2 group"
-                            >
-                                <div className="p-2 bg-green-100 rounded-full group-hover:bg-green-200 transition">
-                                    <Play className="w-6 h-6" />
-                                </div>
-                                <span>Demo Student</span>
-                            </button>
-                            <button
-                                onClick={() => handleDemoLogin('ADMIN')}
-                                className="px-6 py-4 bg-white border-2 border-purple-100 text-purple-600 font-bold rounded-xl hover:bg-purple-50 transition flex flex-col items-center justify-center space-y-2 group col-span-2"
-                            >
-                                <div className="p-2 bg-purple-100 rounded-full group-hover:bg-purple-200 transition">
-                                    <Shield className="w-6 h-6" />
-                                </div>
-                                <span>Demo Admin</span>
-                            </button>
-                        </div>
                     </div>
                 </div>
             </div>
@@ -330,39 +308,56 @@ function App() {
                         <OnboardingTour role={authState.role} onComplete={handleTourComplete} />
                     )}
 
-                    <div className="p-4 sm:p-8">
-                        <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
-                            <div className="flex items-center space-x-3">
-                                <Zap className="h-6 w-6 text-indigo-500" />
-                                <h1 className="text-2xl font-bold text-gray-900">ThoughtSwap</h1>
-                            </div>
-                            <div className="flex items-center space-x-4">
-                                <span className="text-sm font-medium text-gray-600">
-                                    {authState.name}{' '}
-                                    <span className="bg-gray-100 px-2 py-1 rounded text-xs ml-1 border border-gray-200">
-                                        {authState.role}
-                                    </span>
-                                </span>
-                                <button
-                                    onClick={handleLogout}
-                                    className="flex items-center space-x-1 text-red-500 hover:text-red-700 transition"
-                                >
-                                    <LogOut className="h-5 w-5" />
-                                    <span className="hidden sm:inline">Logout</span>
-                                </button>
-                            </div>
-                        </header>
+                    {authState.role === 'STUDENT' && !selectedCourseId ? (
+                        <StudentCourseSelection
+                            userEmail={authState.email || ''}
+                            userName={authState.name || ''}
+                            onSelectCourse={setSelectedCourseId}
+                            onLogout={handleLogout}
+                        />
+                    ) : (
+                        <>
+                            <div className="p-4 sm:p-8">
+                                <header className="flex justify-between items-center py-4 px-6 bg-white shadow-md rounded-xl mb-8">
+                                    <div className="flex items-center space-x-3">
+                                        <Zap className="h-6 w-6 text-indigo-500" />
+                                        <h1 className="text-2xl font-bold text-gray-900">
+                                            ThoughtSwap
+                                        </h1>
+                                    </div>
+                                    <div className="flex items-center space-x-4">
+                                        <span className="text-sm font-medium text-gray-600">
+                                            {authState.name}{' '}
+                                            <span className="bg-gray-100 px-2 py-1 rounded text-xs ml-1 border border-gray-200">
+                                                {authState.role}
+                                            </span>
+                                        </span>
+                                        <button
+                                            onClick={handleLogout}
+                                            className="flex items-center space-x-1 text-red-500 hover:text-red-700 transition"
+                                        >
+                                            <LogOut className="h-5 w-5" />
+                                            <span className="hidden sm:inline">Logout</span>
+                                        </button>
+                                    </div>
+                                </header>
 
-                        {authState.role === 'TEACHER' ? (
-                            <TeacherView auth={authState} />
-                        ) : (
-                            <StudentView
-                                auth={authState}
-                                onJoin={handleStudentJoin}
-                                joinCode={joinCode}
-                            />
-                        )}
-                    </div>
+                                {authState.role === 'TEACHER' ? (
+                                    <TeacherView
+                                        auth={authState}
+                                        courses={authState.courses || []}
+                                    />
+                                ) : (
+                                    <StudentView
+                                        auth={authState}
+                                        courses={authState.courses || []}
+                                        onJoin={handleStudentJoin}
+                                        joinCode={joinCode}
+                                    />
+                                )}
+                            </div>
+                        </>
+                    )}
                 </>
             )}
         </div>

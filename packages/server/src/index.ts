@@ -13,6 +13,7 @@ import { Server, Socket } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { authRouter } from './auth.router.js';
+import { coursesRouter } from './courses.router.js';
 import { PrismaClient } from '@prisma/client';
 
 dotenv.config();
@@ -24,7 +25,17 @@ const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
 
+// Middleware to extract email from query params or headers
+app.use((req, res, next) => {
+    const email = req.query.email || req.headers['x-user-email'];
+    if (email) {
+        (req as any).email = email;
+    }
+    next();
+});
+
 app.use('/accounts/canvas/login', authRouter);
+app.use('/api/courses', coursesRouter);
 
 // --- Logging Helper ---
 async function logEvent(event: string, userId: string | null, payload: any) {
@@ -253,50 +264,66 @@ io.on('connection', (socket: Socket) => {
     });
 
     // --- CLASS MANAGEMENT ---
-    socket.on('TEACHER_START_CLASS', async () => {
+    socket.on('TEACHER_START_CLASS', async (data: any = {}) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
 
-        let joinCode = generateRoomCode();
-        let attempts = 0;
-        while ((await prisma.course.findUnique({ where: { joinCode } })) && attempts < 10) {
-            joinCode = generateRoomCode();
-            attempts++;
+        const courseId = data.courseId;
+        if (!courseId) {
+            socket.emit('ERROR', { message: 'No course selected' });
+            return;
         }
 
-        const course = await prisma.course.create({
-            data: {
-                title: `${name}'s Class ${new Date().toLocaleDateString()}`,
-                joinCode: joinCode,
-                teacherId: user.id,
-            },
+        // Find the course by ID
+        const course = await prisma.course.findUnique({
+            where: { id: courseId },
         });
 
-        const session = await prisma.session.create({
-            data: {
-                courseId: course.id,
-                status: 'ACTIVE',
-                maxSwapRequests: 1,
-            },
+        if (!course || course.teacherId !== user.id) {
+            socket.emit('ERROR', { message: 'Unauthorized or course not found' });
+            return;
+        }
+
+        if (!course.isActive) {
+            socket.emit('ERROR', { message: 'Course is not activated' });
+            return;
+        }
+
+        // Create or get active session
+        let session = await prisma.session.findFirst({
+            where: { courseId: course.id, status: 'ACTIVE' },
         });
 
-        roomAssignments[joinCode] = {};
+        if (!session) {
+            session = await prisma.session.create({
+                data: {
+                    courseId: course.id,
+                    status: 'ACTIVE',
+                    maxSwapRequests: 1,
+                },
+            });
+        }
 
-        socket.join(course.joinCode);
+        roomAssignments[courseId] = {};
+
+        socket.join(courseId);
         socket.emit('CLASS_STARTED', {
-            joinCode: course.joinCode,
+            joinCode: courseId, // Keep this name for client compatibility
             sessionId: session.id,
             maxSwapRequests: session.maxSwapRequests,
         });
-        broadcastParticipantList(course.joinCode, null);
-        logEvent('START_CLASS', user.id, { joinCode, sessionId: session.id });
+        broadcastParticipantList(courseId, null);
+        logEvent('START_CLASS', user.id, { courseId, sessionId: session.id });
     });
 
-    socket.on('UPDATE_SESSION_SETTINGS', async ({ joinCode, maxSwapRequests }) => {
+    socket.on('UPDATE_SESSION_SETTINGS', async ({ joinCode, maxSwapRequests }: any) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
+
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
+
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' },
         });
@@ -305,15 +332,16 @@ io.on('connection', (socket: Socket) => {
                 where: { id: session.id },
                 data: { maxSwapRequests: parseInt(maxSwapRequests) || 1 },
             });
-            logEvent('UPDATE_SETTINGS', user.id, { joinCode, maxSwapRequests });
+            logEvent('UPDATE_SETTINGS', user.id, { courseId: joinCode, maxSwapRequests });
         }
     });
 
-    socket.on('TEACHER_REJOIN', async ({ joinCode }) => {
+    socket.on('TEACHER_REJOIN', async ({ joinCode }: { joinCode: string }) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
 
-        const course = await prisma.course.findUnique({ where: { joinCode } });
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
         if (!course || course.teacherId !== user.id) {
             socket.emit('ERROR', { message: 'Invalid session or unauthorized.' });
             return;
@@ -329,7 +357,7 @@ io.on('connection', (socket: Socket) => {
 
         socket.join(joinCode);
         socket.emit('CLASS_STARTED', {
-            joinCode: course.joinCode,
+            joinCode: joinCode,
             sessionId: session.id,
             maxSwapRequests: session.maxSwapRequests,
         });
@@ -361,31 +389,59 @@ io.on('connection', (socket: Socket) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
 
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
 
         // Reset assignments for the next round
         if (roomAssignments[joinCode]) roomAssignments[joinCode] = {};
 
         // Notify students to go to loading screen
-        io.to(joinCode).emit('RESET_CLIENT_STATE');
+        socket.broadcast.to(joinCode).emit('RESET_CLIENT_STATE');
 
         // Also clear participants list submission status locally/broadcast it
         broadcastParticipantList(joinCode, null);
 
-        logEvent('RESET_STATE', user.id, { joinCode });
+        logEvent('RESET_STATE', user.id, { courseId: joinCode });
     });
 
     socket.on('JOIN_ROOM', async ({ joinCode }: { joinCode: string }) => {
         const user = await userPromise;
         if (!user) return;
 
-        const normalizedCode = joinCode.toUpperCase();
-        const course = await prisma.course.findUnique({ where: { joinCode: normalizedCode } });
+        // joinCode is actually courseId (no need to normalize)
+        const courseId = joinCode;
+        const course = await prisma.course.findUnique({ where: { id: courseId } });
 
         if (!course) {
             socket.emit('ERROR', { message: 'Invalid Room Code' });
             return;
+        }
+
+        if (!course.isActive) {
+            socket.emit('ERROR', { message: 'This class is not currently active.' });
+            return;
+        }
+
+        // For students, auto-enroll if not already enrolled
+        if (role === 'STUDENT') {
+            const enrolled = await prisma.courseEnrollment.findUnique({
+                where: {
+                    studentId_courseId: {
+                        studentId: user.id,
+                        courseId: course.id,
+                    },
+                },
+            });
+
+            if (!enrolled) {
+                await prisma.courseEnrollment.create({
+                    data: {
+                        studentId: user.id,
+                        courseId: course.id,
+                    },
+                });
+            }
         }
 
         const session = await prisma.session.findFirst({
@@ -397,8 +453,8 @@ io.on('connection', (socket: Socket) => {
             return;
         }
 
-        socket.join(normalizedCode);
-        socket.emit('JOIN_SUCCESS', { joinCode: normalizedCode, courseTitle: course.title });
+        socket.join(courseId);
+        socket.emit('JOIN_SUCCESS', { joinCode: courseId, courseTitle: course.title });
 
         const activePrompt = await prisma.promptUse.findFirst({
             where: { sessionId: session.id },
@@ -411,8 +467,8 @@ io.on('connection', (socket: Socket) => {
             });
 
             if (existingThought) {
-                if (roomAssignments[normalizedCode] && roomAssignments[normalizedCode][socket.id]) {
-                    const assignment = roomAssignments[normalizedCode][socket.id];
+                if (roomAssignments[courseId] && roomAssignments[courseId][socket.id]) {
+                    const assignment = roomAssignments[courseId][socket.id];
                     socket.emit('RECEIVE_SWAP', { content: assignment.content });
                     socket.emit('RESTORE_STATE', {
                         status: 'DISCUSSING',
@@ -440,8 +496,8 @@ io.on('connection', (socket: Socket) => {
             }
         }
 
-        broadcastParticipantList(normalizedCode, activePrompt ? activePrompt.id : null);
-        logEvent('JOIN_ROOM', user.id, { joinCode: normalizedCode });
+        broadcastParticipantList(courseId, activePrompt?.id || null);
+        logEvent('JOIN_ROOM', user.id, { courseId });
     });
 
     socket.on('TEACHER_SEND_PROMPT', async (data) => {
@@ -451,8 +507,9 @@ io.on('connection', (socket: Socket) => {
         // Extract type and options, default to TEXT
         const { joinCode, content, type = 'TEXT', options = [] } = data;
 
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
 
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' },
@@ -470,7 +527,7 @@ io.on('connection', (socket: Socket) => {
 
         roomAssignments[joinCode] = {};
 
-        io.to(joinCode).emit('NEW_PROMPT', {
+        socket.broadcast.to(joinCode).emit('NEW_PROMPT', {
             content,
             promptUseId: promptUse.id,
             type,
@@ -479,7 +536,12 @@ io.on('connection', (socket: Socket) => {
 
         broadcastParticipantList(joinCode, promptUse.id);
         socket.emit('THOUGHTS_UPDATE', []);
-        logEvent('SEND_PROMPT', user.id, { joinCode, promptUseId: promptUse.id, content, type });
+        logEvent('SEND_PROMPT', user.id, {
+            courseId: joinCode,
+            promptUseId: promptUse.id,
+            content,
+            type,
+        });
     });
 
     socket.on('SUBMIT_THOUGHT', async (data) => {
@@ -537,8 +599,9 @@ io.on('connection', (socket: Socket) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
 
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
 
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' },
@@ -602,8 +665,9 @@ io.on('connection', (socket: Socket) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
 
-        const course = await prisma.course.findUnique({ where: { joinCode } });
-        if (!course) return;
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' },
         });
@@ -677,7 +741,8 @@ io.on('connection', (socket: Socket) => {
     socket.on('STUDENT_REQUEST_NEW_THOUGHT', async ({ joinCode, currentThoughtContent }) => {
         const user = await userPromise;
         if (!user || role !== 'STUDENT') return;
-        const course = await prisma.course.findUnique({ where: { joinCode } });
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
         if (!course) return;
         const session = await prisma.session.findFirst({
             where: { courseId: course.id, status: 'ACTIVE' },
@@ -736,7 +801,10 @@ io.on('connection', (socket: Socket) => {
     socket.on('END_SESSION', async ({ joinCode }) => {
         const user = await userPromise;
         if (!user || role !== 'TEACHER') return;
-        const course = await prisma.course.findUnique({ where: { joinCode } });
+        // joinCode is actually courseId
+        const course = await prisma.course.findUnique({ where: { id: joinCode } });
+        if (!course || course.teacherId !== user.id) return;
+
         if (course) {
             await prisma.session.updateMany({
                 where: { courseId: course.id, status: 'ACTIVE' },
@@ -744,13 +812,13 @@ io.on('connection', (socket: Socket) => {
             });
         }
         const surveyLink = 'https://jmu.qualtrics.com/jfe/form/SV_dummy_survey_id';
-        io.to(joinCode).emit('SESSION_ENDED', { surveyLink });
+        socket.broadcast.to(joinCode).emit('SESSION_ENDED', { surveyLink });
         const sockets = await io.in(joinCode).fetchSockets();
         sockets.forEach((s) => {
             s.leave(joinCode);
         });
         if (roomAssignments[joinCode]) delete roomAssignments[joinCode];
-        logEvent('END_SESSION', user.id, { joinCode });
+        logEvent('END_SESSION', user.id, { courseId: joinCode });
     });
 
     // --- ADMIN ENDPOINTS ---

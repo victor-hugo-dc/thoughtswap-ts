@@ -22,8 +22,17 @@ interface AuthData {
     role: string | null;
 }
 
+interface Course {
+    id: string;
+    canvasId: string;
+    title: string;
+    teacherId: string;
+    isActive: boolean;
+}
+
 interface TeacherViewProps {
     auth: AuthData;
+    courses: Course[];
 }
 
 interface Participant {
@@ -72,9 +81,12 @@ interface PromptPayload {
     options?: string[];
 }
 
-export default function TeacherView({ auth }: TeacherViewProps) {
+export default function TeacherView({ auth, courses }: TeacherViewProps) {
     const [isActive, setIsActive] = useState(false);
     const [joinCode, setJoinCode] = useState('');
+    const [selectedCourse, setSelectedCourse] = useState<Course | null>(
+        courses.length > 0 ? courses[0] : null
+    );
 
     // Prompt Composer State
     const [promptInput, setPromptInput] = useState('');
@@ -310,6 +322,35 @@ export default function TeacherView({ auth }: TeacherViewProps) {
         showModal('success', 'Copied!', 'Room code copied.');
     };
 
+    // Handler for course activation/deactivation
+    const handleToggleCourseActive = async (courseId: string, currentStatus: boolean) => {
+        const action = currentStatus ? 'deactivate' : 'activate';
+        try {
+            const response = await fetch(`/api/courses/${courseId}/${action}`, {
+                method: 'POST',
+                headers: { 'x-user-email': auth.email || '' },
+            });
+            if (!response.ok) {
+                showModal('error', 'Error', `Failed to ${action} course.`);
+            }
+        } catch (e) {
+            showModal('error', 'Error', `Failed to ${action} course.`);
+        }
+    };
+
+    const handleStartSession = (course: Course) => {
+        if (!course.isActive) {
+            showModal(
+                'error',
+                'Course Not Active',
+                'Activate the course before starting a session.'
+            );
+            return;
+        }
+        setSelectedCourse(course);
+        socket.emit('TEACHER_START_CLASS', { courseId: course.id });
+    };
+
     // --- IDLE STATE ---
     if (!isActive) {
         return (
@@ -326,18 +367,19 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                 <Modal {...modal} onClose={() => setModal({ ...modal, isOpen: false })} />
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-                    <div className="lg:col-span-2 flex items-center justify-center">
-                        <div className="bg-white p-8 sm:p-10 rounded-2xl shadow-xl text-center w-full border border-gray-100">
-                            <div className="bg-indigo-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
-                                <Play className="w-8 h-8 text-indigo-600 ml-1" />
+                    <div className="lg:col-span-2">
+                        <div className="bg-white p-8 sm:p-10 rounded-2xl shadow-xl w-full border border-gray-100">
+                            <div className="flex items-center gap-3 mb-6">
+                                <div className="bg-indigo-100 w-12 h-12 rounded-full flex items-center justify-center">
+                                    <BookOpen className="w-6 h-6 text-indigo-600" />
+                                </div>
+                                <h2 className="text-2xl sm:text-3xl font-bold text-gray-800">
+                                    Your Classes
+                                </h2>
                             </div>
-                            <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 mb-2">
-                                Start a New Class
-                            </h2>
-                            <p className="text-gray-600 mb-8">
-                                Create a temporary room for your students.
-                            </p>
-
+                            <p className="text-gray-600 mb-6">
+                                Activate a class to start a session with your students.
+                            </p>{' '}
                             {/* Staged Prompt Preview */}
                             {promptInput && (
                                 <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-xl text-left relative group w-full">
@@ -375,17 +417,85 @@ export default function TeacherView({ auth }: TeacherViewProps) {
                                     </div>
                                 </div>
                             )}
-
-                            <div className="space-y-3">
-                                <button
-                                    onClick={() => socket.emit('TEACHER_START_CLASS')}
-                                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-lg shadow-lg transition transform hover:scale-105"
-                                >
-                                    Launch Session
-                                </button>
+                            {/* Course Grid */}
+                            {courses.length === 0 ? (
+                                <div className="text-center py-12 px-4 bg-gray-50 rounded-xl border border-gray-200">
+                                    <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                                    <p className="text-gray-600 font-medium">
+                                        No Canvas courses found
+                                    </p>
+                                    <p className="text-sm text-gray-500 mt-2">
+                                        You'll see your Canvas courses here once they're available.
+                                    </p>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    {courses.map((course) => (
+                                        <div
+                                            key={course.id}
+                                            onClick={() => setSelectedCourse(course)}
+                                            className={`p-5 rounded-xl border-2 transition cursor-pointer ${
+                                                selectedCourse?.id === course.id
+                                                    ? 'border-indigo-500 bg-indigo-50'
+                                                    : 'border-gray-200 bg-white hover:border-indigo-300'
+                                            }`}
+                                        >
+                                            <div className="flex items-start justify-between mb-3">
+                                                <div className="flex-1">
+                                                    <h3 className="font-bold text-gray-800 text-sm line-clamp-2">
+                                                        {course.title}
+                                                    </h3>
+                                                </div>
+                                                <span
+                                                    className={`ml-2 px-2 py-1 rounded text-xs font-bold whitespace-nowrap ${
+                                                        course.isActive
+                                                            ? 'bg-green-100 text-green-700'
+                                                            : 'bg-gray-100 text-gray-700'
+                                                    }`}
+                                                >
+                                                    {course.isActive ? 'Active' : 'Inactive'}
+                                                </span>
+                                            </div>
+                                            <div className="space-y-2">
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleToggleCourseActive(
+                                                            course.id,
+                                                            course.isActive
+                                                        );
+                                                    }}
+                                                    className={`w-full py-2 px-3 rounded-lg font-semibold text-sm transition ${
+                                                        course.isActive
+                                                            ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                                            : 'bg-green-50 text-green-600 hover:bg-green-100'
+                                                    }`}
+                                                >
+                                                    {course.isActive ? 'Deactivate' : 'Activate'}
+                                                </button>
+                                                <button
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        handleStartSession(course);
+                                                    }}
+                                                    disabled={!course.isActive}
+                                                    className={`w-full py-2 px-3 rounded-lg font-semibold text-sm transition ${
+                                                        course.isActive
+                                                            ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                                            : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                                    }`}
+                                                >
+                                                    Start Session
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                            <div className="mt-6 flex gap-2">
                                 <button
                                     onClick={() => setShowBank(true)}
-                                    className="w-full py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center"
+                                    className="flex-1 py-3 bg-white border-2 border-indigo-100 text-indigo-600 font-bold rounded-xl hover:bg-indigo-50 transition flex items-center justify-center"
                                 >
                                     <BookOpen className="w-5 h-5 mr-2" /> Manage Prompt Bank
                                 </button>

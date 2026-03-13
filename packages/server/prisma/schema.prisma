@@ -19,9 +19,11 @@ model User {
   consentGiven Boolean  @default(false)
   consentDate  DateTime?
 
-  thoughts     Thought[] 
-  savedPrompts SavedPrompt[] // Relation to saved prompts
-  swapRequests SwapRequest[]
+  thoughts          Thought[]
+  savedPrompts      SavedPrompt[]
+  swapRequests      SwapRequest[]
+  courseEnrollments CourseEnrollment[]
+  teacherOf         Course[]  // Courses taught by this teacher
 
   @@map("users")
 }
@@ -39,13 +41,30 @@ model SavedPrompt {
 }
 
 model Course {
-  id        String    @id @default(uuid())
-  joinCode  String    @unique
-  title     String
-  teacherId String    
-  sessions  Session[]
+  id           String   @id @default(uuid())
+  canvasId     String   @unique  // Canvas course ID
+  title        String
+  semester     String   @default("Unknown")  // Term/semester name from Canvas
+  teacherId    String?
+  teacher      User?    @relation(fields: [teacherId], references: [id])
+  isActive     Boolean  @default(false)  // Whether teacher has activated this class
+  
+  enrollments  CourseEnrollment[]
+  sessions     Session[]
 
   @@map("courses")
+}
+
+model CourseEnrollment {
+  id        String   @id @default(uuid())
+  studentId String
+  student   User     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  enrolledAt DateTime @default(now())
+
+  @@unique([studentId, courseId])
+  @@map("course_enrollments")
 }
 
 model Session {
