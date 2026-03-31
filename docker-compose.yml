@@ -17,14 +17,14 @@ services:
             context: .
             dockerfile: packages/server/Dockerfile
             args:
-                DATABASE_URL: ${DATABASE_URL:-postgresql://user:password@postgres:5432/thoughtswap}
+                DATABASE_URL: postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-thoughtswap}?schema=public
                 PORT: ${SERVER_PORT:-3001}
         restart: always
         command: sh -c "npx prisma migrate deploy && npm start"
         ports:
             - '${SERVER_HOST_PORT:-8000}:${SERVER_PORT:-3001}'
         environment:
-            DATABASE_URL: ${DATABASE_URL:-postgresql://user:password@postgres:5432/thoughtswap}
+            DATABASE_URL: postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-thoughtswap}?schema=public
             PORT: ${SERVER_PORT:-3001}
             FRONTEND_URL: ${FRONTEND_URL:-http://localhost:${CLIENT_HOST_PORT:-5173}}
             CANVAS_BASE_URL: ${CANVAS_BASE_URL}

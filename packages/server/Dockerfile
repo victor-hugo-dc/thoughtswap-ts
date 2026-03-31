@@ -22,6 +22,7 @@ WORKDIR /app/packages/server
 ARG DATABASE_URL
 ARG PORT=3001
 ENV PORT=$PORT
+ENV DATABASE_URL=$DATABASE_URL
 
 # Generate Prisma Client
 RUN npx prisma generate
