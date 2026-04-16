@@ -127,7 +127,7 @@ router.get('/', (req: Request, res: Response) => {
         `${CANVAS_BASE_URL}/login/oauth2/auth?` +
         `client_id=${CANVAS_CLIENT_ID}&` +
         `response_type=code&` +
-        `redirect_uri=${CANVAS_REDIRECT_URI}&` +
+        `redirect_uri=${encodeURIComponent(CANVAS_REDIRECT_URI!)}&` +
         `state=${state}&` +
         `scope=${encodeURIComponent(REQUIRED_SCOPES)}`;
 
